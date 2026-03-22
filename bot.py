@@ -401,12 +401,23 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+def _check_yt_dlp_version():
+    """Log the installed yt-dlp version as a sanity check at startup."""
+    try:
+        import yt_dlp
+        version = getattr(yt_dlp, '__version__', 'unknown')
+        logger.info(f"yt-dlp version: {version}  (run 'pip install -U yt-dlp' to update)")
+    except Exception:
+        logger.warning("Could not determine yt-dlp version")
+
+
 def main():
     """Start the bot."""
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN not set in environment or .env file!")
         return
 
+    _check_yt_dlp_version()
     logger.info("Starting Instagram Downloader Bot...")
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()

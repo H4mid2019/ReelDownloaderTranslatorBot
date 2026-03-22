@@ -242,6 +242,24 @@ def download_instagram_post(url: str) -> MediaResult:
     except Exception as e:
         _cleanup_temp_cookie(cookies_path)
         error_msg = str(e)
+
+        if 'unable to extract video url' in error_msg.lower():
+            return MediaResult(
+                post_url=url,
+                media_type='unknown',
+                file_path='',
+                file_size_bytes=0,
+                error=(
+                    "yt-dlp could not extract the media URL.\n\n"
+                    "Fix: update yt-dlp on the server:\n"
+                    "  pip install -U yt-dlp\n"
+                    "  sudo systemctl restart insta-reel-bot\n\n"
+                    "If the issue persists, the post may require additional "
+                    "cookies beyond sessionid. Export a full cookies file from "
+                    "Chrome and set INSTAGRAM_COOKIES_FILE in .env."
+                )
+            )
+
         auth_needed = (
             'login' in error_msg.lower()
             or 'sign in' in error_msg.lower()
