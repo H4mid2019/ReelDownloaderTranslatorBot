@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 from config import TELEGRAM_BOT_TOKEN, MAX_VIDEO_SIZE_MB, MAX_VIDEO_SIZE_BYTES
-from downloader import download_instagram_post, is_instagram_url
+from downloader import download_video, detect_platform
 from transcriber import Transcriber
 from translator import Translator
 
@@ -44,15 +44,16 @@ VIDEO_CHUNK_SIZE_BYTES = 45 * 1024 * 1024
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     await update.message.reply_text(
-        "👋 Welcome to Instagram Downloader Bot!\n\n"
-        "I can download Instagram posts (images & videos) and transcribe them.\n\n"
+        "👋 Welcome to Video Downloader Bot!\n\n"
+        "I can download videos from Instagram Reels/TV, X/Twitter, YouTube Shorts "
+        "and transcribe/translate them.\n\n"
         "📝 Commands:\n"
-        "/d <instagram_url> - Download and process a post\n"
-        "/help - Show help message\n\n"
-        "Supported URL formats:\n"
-        "• https://www.instagram.com/p/POST_ID/\n"
-        "• https://www.instagram.com/reel/REEL_ID/\n"
-        "• https://www.instagram.com/tv/VIDEO_ID/\n\n"
+        "/d <video_url> - Download and process\n"
+        "/help - Show help\n\n"
+        "Supported:\n"
+        "• Instagram: /reel/, /reels/, /tv/ (no /p/ posts)\n"
+        "• X/Twitter: x.com/username/status/ID\n"
+        "• YouTube: youtube.com/shorts/ID, youtu.be/ID\n\n"
         + DISCLAIMER
     )
 
@@ -60,18 +61,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command."""
     await update.message.reply_text(
-        "📖 How to use this bot:\n\n"
-        "1️⃣ Send an Instagram URL with /d\n"
-        "   Example: /d https://www.instagram.com/p/ABC123/\n\n"
-        "2️⃣ For videos:\n"
-        "   • Videos ≤ 50MB: I'll send the video\n"
-        "   • Videos > 50MB: I'll split and send all parts\n\n"
-        "3️⃣ Transcription & Translation:\n"
-        "   • Auto-detects video language\n"
-        "   • Persian videos: Video sent, no transcription needed\n"
-        "   • English videos: Video + transcript\n"
-        "   • Other languages: Video + transcript + English translation\n\n"
-        "⚠️ Note: Only public Instagram posts are supported.\n\n"
+        "📖 How to use:\n\n"
+        "1️⃣ `/d <video_url>`\n\n"
+        "✅ **Supported platforms:**\n"
+        "• Instagram Reels/TV (no /p/ posts)\n"
+        "• X/Twitter status videos\n"
+        "• YouTube Shorts\n\n"
+        "2️⃣ **Videos >50MB** auto-split\n\n"
+        "3️⃣ **Transcription/Translation:**\n"
+        "• Persian: video only\n"
+        "• English: video + transcript\n"
+        "• Other: video + transcript + English translation\n\n"
+        "⚠️ Public videos only\n\n"
         + DISCLAIMER
     )
 
@@ -236,41 +237,31 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = ' '.join(context.args)
 
-    # Validate URL
-    if not is_instagram_url(url):
+    # Detect platform
+    platform = detect_platform(url)
+    if not platform:
         await update.message.reply_text(
-            "❌ Invalid Instagram URL.\n\n"
-            "Supported formats:\n"
-            "• https://www.instagram.com/p/POST_ID/\n"
-            "• https://www.instagram.com/reel/REEL_ID/\n"
-            "• https://www.instagram.com/tv/VIDEO_ID/\n\n"
+            "❌ Unsupported URL.\n\n"
+            "Supported:\n"
+            "• Instagram Reels/TV: instagram.com/reel/...\n"
+            "• X/Twitter: x.com/user/status/ID\n"
+            "• YouTube Shorts: youtube.com/shorts/...\n\n"
             + DISCLAIMER
         )
         return
 
     # Send initial processing message
-    status_msg = await update.message.reply_text("⏳ Downloading Instagram post...")
+    status_msg = await update.message.reply_text(f"⏳ Downloading from {platform}...")
 
     try:
-        # Download the post
-        result = download_instagram_post(url)
+        # Download the video
+        result = download_video(url)
 
         if result.error:
             await status_msg.edit_text(f"❌ Download failed: {result.error}")
             return
 
         file_size_mb = result.file_size_bytes / (1024 * 1024)
-
-        # ── Handle IMAGE ───────────────────────────────────────────────────────
-        if result.media_type == 'image':
-            await status_msg.edit_text("📷 Image downloaded! Sending...")
-            await update.message.reply_photo(
-                photo=open(result.file_path, 'rb'),
-                caption=f"🖼️ Instagram Image\n📏 Size: {file_size_mb:.2f} MB",
-            )
-            await status_msg.delete()
-            cleanup_file(result.file_path)
-            return
 
         # ── Handle VIDEO ───────────────────────────────────────────────────────
         if result.media_type == 'video':

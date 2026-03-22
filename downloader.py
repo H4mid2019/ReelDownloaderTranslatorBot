@@ -15,23 +15,54 @@ from config import INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, INSTAGRAM_COOKIES_FIL
 
 @dataclass
 class MediaResult:
-    """Result of downloading an Instagram post."""
+    """Result of downloading a video post."""
     post_url: str
-    media_type: str  # 'video' or 'image'
-    file_path: str
-    file_size_bytes: int
+    media_type: str = 'unknown'
+    file_path: str = ''
+    file_size_bytes: int = 0
     duration_seconds: Optional[float] = None
     caption: Optional[str] = None
+    platform: str = 'unknown'
+    tweet_text: Optional[str] = None
     error: Optional[str] = None
 
 
-def is_instagram_url(url: str) -> bool:
-    """Check if the URL is a valid Instagram URL."""
+def is_instagram_video_url(url: str) -> bool:
+    """Check if URL is Instagram video (reel/tv only, no /p/ posts)."""
     patterns = [
-        r'(https?://)?(www\.)?instagram\.com/(p|reel|reels|tv|stories)/[\w-]+/?',
-        r'(https?://)?(www\.)?instagr\.am/[\w-]+/?',
+        r'(https?://)?(www\.)?instagram\.com/(reel|reels|tv)/[\w-]+/?',
+        r'(https?://)?(www\.)?instagr\.am/(reel|reels|tv)/[\w-]+/?',
     ]
     return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
+
+
+def is_twitter_url(url: str) -> bool:
+    """Check if URL is Twitter/X video post."""
+    patterns = [
+        r'(https?://)?(www\.)?(twitter\.com|x\.com)/[\w-]+/status/[\d-]+',
+    ]
+    return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
+
+
+def is_youtube_short_url(url: str) -> bool:
+    """Check if URL is YouTube Short."""
+    patterns = [
+        r'(https?://)?(www\.)?youtube\.com/shorts/[\w-]+',
+        r'(https?://)?(www\.)?youtu\.be/[\w-]+',
+        r'(https?://)?(www\.)?youtube\.com/watch\?v=[\w-]+',
+    ]
+    return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
+
+
+def detect_platform(url: str) -> Optional[str]:
+    """Detect platform: 'instagram', 'twitter', 'youtube', or None."""
+    if is_instagram_video_url(url):
+        return 'instagram'
+    if is_twitter_url(url):
+        return 'twitter'
+    if is_youtube_short_url(url):
+        return 'youtube'
+    return None
 
 
 def normalize_instagram_url(url: str) -> str:
@@ -133,30 +164,18 @@ def get_mobile_headers_options(download_dir: str, cookies_path: Optional[str] = 
     return ydl_opts
 
 
-def process_info_result(info: dict, original_url: str, download_dir: str) -> MediaResult:
+def process_info_result(info: dict, original_url: str, download_dir: str, platform: str, tweet_text: Optional[str] = None) -> MediaResult:
     """Process yt-dlp info result and return MediaResult."""
     
     if info is None:
         return MediaResult(
             post_url=original_url,
-            media_type='unknown',
-            file_path='',
-            file_size_bytes=0,
+            platform=platform,
             error="Failed to extract post information"
         )
     
-    # Determine media type
-    media_type = 'image'
-    if info.get('duration'):
-        media_type = 'video'
-    elif info.get('format') and 'video' in str(info.get('format', '')).lower():
-        media_type = 'video'
-    else:
-        formats = info.get('formats', [])
-        for fmt in formats:
-            if fmt.get('vcodec') and fmt.get('vcodec') != 'none':
-                media_type = 'video'
-                break
+    # Assume video (no image support)
+    media_type = 'video'
     
     # Find the downloaded file
     file_path = ''
@@ -173,19 +192,22 @@ def process_info_result(info: dict, original_url: str, download_dir: str) -> Med
     if not file_path:
         return MediaResult(
             post_url=original_url,
+            platform=platform,
             media_type='unknown',
-            file_path='',
-            file_size_bytes=0,
             error="Downloaded file not found"
         )
     
+    caption = info.get('description') or info.get('title', '')
+    
     return MediaResult(
         post_url=original_url,
+        platform=platform,
         media_type=media_type,
         file_path=file_path,
         file_size_bytes=file_size,
         duration_seconds=info.get('duration'),
-        caption=info.get('description') or info.get('title', ''),
+        caption=caption,
+        tweet_text=tweet_text,
         error=None
     )
 
@@ -199,102 +221,93 @@ def _cleanup_temp_cookie(path: Optional[str]):
             pass
 
 
-def download_instagram_post(url: str) -> MediaResult:
+def download_video(url: str) -> MediaResult:
     """
-    Download an Instagram post (image or video).
-
-    Authentication priority (set in .env):
-    1. INSTAGRAM_COOKIES_FILE — full Netscape cookies file (most reliable)
-    2. INSTAGRAM_SESSION_ID  — single session cookie value (easy to obtain)
-    3. Unauthenticated        — only works for some public Reels
-
-    How to get your session ID:
-    1. Open instagram.com in Chrome and log in
-    2. Press F12 → Application → Cookies → https://www.instagram.com
-    3. Find the "sessionid" cookie and copy its Value
-    4. Set INSTAGRAM_SESSION_ID=<value> in .env
+    Download video from Instagram Reels/TV, X/Twitter, or YouTube Shorts.
+    
+    Rejects Instagram /p/ posts (images/carousels).
     """
-    normalized_url = normalize_instagram_url(url)
-    download_dir = tempfile.mkdtemp(prefix="insta_")
-
-    # Resolve once so both methods reuse the same (possibly temp) file
-    cookies_path = _resolve_cookies_file()
-
-    # Method 1: Desktop Chrome user-agent
+    platform = detect_platform(url)
+    if not platform:
+        return MediaResult(
+            post_url=url,
+            platform='unknown',
+            error="Unsupported platform. Supported: Instagram Reels/TV, X/Twitter videos, YouTube Shorts."
+        )
+    
+    if platform == 'instagram' and not is_instagram_video_url(url):
+        return MediaResult(
+            post_url=url,
+            platform=platform,
+            error="❌ Instagram posts (/p/) not supported. Only Reels/TV videos."
+        )
+    
+    target_url = normalize_instagram_url(url) if platform == 'instagram' else url
+    download_dir = tempfile.mkdtemp(prefix=f"{platform}_")
+    
+    cookies_path = _resolve_cookies_file() if platform == 'instagram' else None
+    
+    # Method 1: Desktop user-agent
     ydl_opts = get_yt_dlp_options(download_dir, cookies_path)
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(normalized_url, download=True)
+            info = ydl.extract_info(target_url, download=True)
             if info:
+                tweet_text = info.get('description', '')[:400] if platform == 'twitter' else None
                 _cleanup_temp_cookie(cookies_path)
-                return process_info_result(info, url, download_dir)
-    except Exception as e:
-        pass  # Try next method
-
-    # Method 2: Mobile Safari user-agent
+                return process_info_result(info, url, download_dir, platform, tweet_text)
+    except Exception:
+        pass  # Try mobile
+    
+    # Method 2: Mobile user-agent
     ydl_opts = get_mobile_headers_options(download_dir, cookies_path)
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(normalized_url, download=True)
+            info = ydl.extract_info(target_url, download=True)
             if info:
+                tweet_text = info.get('description', '')[:400] if platform == 'twitter' else None
                 _cleanup_temp_cookie(cookies_path)
-                return process_info_result(info, url, download_dir)
+                return process_info_result(info, url, download_dir, platform, tweet_text)
     except Exception as e:
         _cleanup_temp_cookie(cookies_path)
         error_msg = str(e)
-
+        
         if 'unable to extract video url' in error_msg.lower():
             return MediaResult(
                 post_url=url,
-                media_type='unknown',
-                file_path='',
-                file_size_bytes=0,
+                platform=platform,
                 error=(
-                    "yt-dlp could not extract the media URL.\n\n"
-                    "Fix: update yt-dlp on the server:\n"
-                    "  pip install -U yt-dlp\n"
-                    "  sudo systemctl restart insta-reel-bot\n\n"
-                    "If the issue persists, the post may require additional "
-                    "cookies beyond sessionid. Export a full cookies file from "
-                    "Chrome and set INSTAGRAM_COOKIES_FILE in .env."
+                    "yt-dlp could not extract the video URL.\n\n"
+                    "Fix: `pip install -U yt-dlp` then restart bot.\n\n"
+                    "For Instagram, try full cookies file (INSTAGRAM_COOKIES_FILE)."
                 )
             )
-
+        
         auth_needed = (
-            'login' in error_msg.lower()
-            or 'sign in' in error_msg.lower()
-            or 'rate-limit' in error_msg.lower()
-            or 'not available' in error_msg.lower()
+            'login' in error_msg.lower() or 'sign in' in error_msg.lower() or 
+            'rate-limit' in error_msg.lower() or 'not available' in error_msg.lower()
         )
-        if auth_needed:
+        if auth_needed and platform == 'instagram':
             return MediaResult(
                 post_url=url,
-                media_type='unknown',
-                file_path='',
-                file_size_bytes=0,
+                platform=platform,
                 error=(
                     "Instagram requires authentication.\n\n"
-                    "Easiest fix — set your session ID in .env:\n"
-                    "1. Open instagram.com in Chrome and log in\n"
-                    "2. Press F12 → Application → Cookies → instagram.com\n"
-                    "3. Find 'sessionid' cookie — copy its Value\n"
-                    "4. Add to .env:  INSTAGRAM_SESSION_ID=<value>\n"
-                    "5. Restart the bot"
+                    "1. instagram.com → F12 → Application → Cookies → instagram.com → sessionid value\n"
+                    "2. .env: INSTAGRAM_SESSION_ID=<value>\n"
+                    "3. Restart bot"
                 )
             )
+        
         return MediaResult(
             post_url=url,
-            media_type='unknown',
-            file_path='',
-            file_size_bytes=0,
+            platform=platform,
             error=f"Download failed: {error_msg}"
         )
-
+    
     _cleanup_temp_cookie(cookies_path)
     return MediaResult(
         post_url=url,
-        media_type='unknown',
-        file_path='',
-        file_size_bytes=0,
-        error="Unable to download. Instagram may require authentication."
+        platform=platform,
+        error="Unable to download video."
     )
