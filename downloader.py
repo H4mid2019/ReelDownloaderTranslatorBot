@@ -9,7 +9,8 @@ import tempfile
 import yt_dlp
 from dataclasses import dataclass
 from typing import Optional
-from config import INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, INSTAGRAM_COOKIES_FILE
+import time
+from config import INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID
 
 
 @dataclass
@@ -45,57 +46,91 @@ def normalize_instagram_url(url: str) -> str:
     return url.rstrip('/')
 
 
-def get_yt_dlp_options(download_dir: str) -> dict:
+def _write_session_cookie_file() -> Optional[str]:
     """
-    Get yt-dlp options with proper Instagram authentication.
-    Uses cookies file if available, otherwise tries browser cookies.
+    Write a minimal Netscape-format cookies file from INSTAGRAM_SESSION_ID.
+    Returns the path to the temp file, or None if session ID is not configured.
+    The caller is responsible for deleting the file when done.
     """
-    ydl_opts = {
+    if not INSTAGRAM_SESSION_ID:
+        return None
+    # Netscape cookie file format:
+    # domain  include_subdomains  path  secure  expiry  name  value
+    expiry = int(time.time()) + 60 * 60 * 24 * 365  # 1 year from now
+    lines = [
+        "# Netscape HTTP Cookie File\n",
+        f".instagram.com\tTRUE\t/\tTRUE\t{expiry}\tsessionid\t{INSTAGRAM_SESSION_ID}\n",
+    ]
+    tmp = tempfile.NamedTemporaryFile(
+        mode='w', suffix='_insta_cookies.txt', delete=False
+    )
+    tmp.writelines(lines)
+    tmp.close()
+    return tmp.name
+
+
+def _resolve_cookies_file() -> Optional[str]:
+    """
+    Return the best available cookies file path, or None.
+    Priority: configured file > session-ID-generated temp file.
+    Caller must NOT delete a user-configured file; temp files must be cleaned up.
+    """
+    if INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE):
+        return INSTAGRAM_COOKIES_FILE
+    return _write_session_cookie_file()
+
+
+def _base_ydl_opts(download_dir: str) -> dict:
+    """Return base yt-dlp options shared across all methods."""
+    return {
         'outtmpl': os.path.join(download_dir, '%(id)s.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
         'extractor_retries': 3,
         'fragment_retries': 3,
-        # Browser simulation headers
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
-            'Upgrade-Insecure-Requests': '1',
-        },
     }
-    
-    # Try to use cookies file first
-    if INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE):
-        ydl_opts['cookiefile'] = INSTAGRAM_COOKIES_FILE
-        return ydl_opts
-    
-    # Try browser cookies (Chrome)
-    ydl_opts['cookiesfrombrowser'] = ('chrome', None, None, None)
-    
+
+
+def get_yt_dlp_options(download_dir: str, cookies_path: Optional[str] = None) -> dict:
+    """
+    Get yt-dlp options with proper Instagram authentication.
+    Priority: cookies file > session ID > unauthenticated.
+    Note: username/password login is broken in current yt-dlp Instagram extractor.
+    """
+    ydl_opts = _base_ydl_opts(download_dir)
+    ydl_opts['http_headers'] = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,'
+                  'image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0',
+        'Upgrade-Insecure-Requests': '1',
+    }
+    if cookies_path:
+        ydl_opts['cookiefile'] = cookies_path
     return ydl_opts
 
 
-def get_mobile_headers_options(download_dir: str) -> dict:
-    """Get options with mobile user-agent (sometimes works better)."""
-    return {
-        'outtmpl': os.path.join(download_dir, '%(id)s.%(ext)s'),
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': False,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-        },
+def get_mobile_headers_options(download_dir: str, cookies_path: Optional[str] = None) -> dict:
+    """Get options with mobile user-agent (sometimes works better for Reels)."""
+    ydl_opts = _base_ydl_opts(download_dir)
+    ydl_opts['http_headers'] = {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+                      'AppleWebKit/605.1.15 (KHTML, like Gecko) '
+                      'Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
     }
+    if cookies_path:
+        ydl_opts['cookiefile'] = cookies_path
+    return ydl_opts
 
 
 def process_info_result(info: dict, original_url: str, download_dir: str) -> MediaResult:
@@ -155,71 +190,89 @@ def process_info_result(info: dict, original_url: str, download_dir: str) -> Med
     )
 
 
+def _cleanup_temp_cookie(path: Optional[str]):
+    """Delete a temp cookies file if it was auto-generated (not user-configured)."""
+    if path and path != INSTAGRAM_COOKIES_FILE:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+
 def download_instagram_post(url: str) -> MediaResult:
     """
     Download an Instagram post (image or video).
-    
-    For posts with images/carousels, Instagram requires authentication.
-    Recommended: Create an Instagram cookies file from your browser.
-    
-    To create cookies file:
-    1. Login to Instagram in Chrome
-    2. Install "EditThisCookie" extension
-    3. Export cookies in Netscape format
-    4. Save as instagram_cookies.txt
-    5. Set INSTAGRAM_COOKIES_FILE=instagram_cookies.txt in .env
+
+    Authentication priority (set in .env):
+    1. INSTAGRAM_COOKIES_FILE — full Netscape cookies file (most reliable)
+    2. INSTAGRAM_SESSION_ID  — single session cookie value (easy to obtain)
+    3. Unauthenticated        — only works for some public Reels
+
+    How to get your session ID:
+    1. Open instagram.com in Chrome and log in
+    2. Press F12 → Application → Cookies → https://www.instagram.com
+    3. Find the "sessionid" cookie and copy its Value
+    4. Set INSTAGRAM_SESSION_ID=<value> in .env
     """
     normalized_url = normalize_instagram_url(url)
     download_dir = tempfile.mkdtemp(prefix="insta_")
-    
-    # Method 1: Try with cookies file or browser cookies
-    ydl_opts = get_yt_dlp_options(download_dir)
-    
+
+    # Resolve once so both methods reuse the same (possibly temp) file
+    cookies_path = _resolve_cookies_file()
+
+    # Method 1: Desktop Chrome user-agent
+    ydl_opts = get_yt_dlp_options(download_dir, cookies_path)
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(normalized_url, download=True)
             if info:
+                _cleanup_temp_cookie(cookies_path)
                 return process_info_result(info, url, download_dir)
     except Exception as e:
-        error_msg = str(e)
-        # Continue to next method if this one fails
-        if not ('login' in error_msg.lower() or 'sign' in error_msg.lower()):
-            pass  # Log for debugging
-    
-    # Method 2: Try with mobile user-agent
-    ydl_opts = get_mobile_headers_options(download_dir)
-    
+        pass  # Try next method
+
+    # Method 2: Mobile Safari user-agent
+    ydl_opts = get_mobile_headers_options(download_dir, cookies_path)
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(normalized_url, download=True)
             if info:
+                _cleanup_temp_cookie(cookies_path)
                 return process_info_result(info, url, download_dir)
     except Exception as e:
+        _cleanup_temp_cookie(cookies_path)
         error_msg = str(e)
-        # Check if it's a login required error
-        if 'login' in error_msg.lower() or 'sign in' in error_msg.lower():
+        auth_needed = (
+            'login' in error_msg.lower()
+            or 'sign in' in error_msg.lower()
+            or 'rate-limit' in error_msg.lower()
+            or 'not available' in error_msg.lower()
+        )
+        if auth_needed:
             return MediaResult(
                 post_url=url,
                 media_type='unknown',
                 file_path='',
                 file_size_bytes=0,
-                error="Instagram requires authentication for this post.\n\n"
-                      "To download image posts, you need Instagram cookies:\n"
-                      "1. Login to Instagram in Chrome\n"
-                      "2. Use EditThisCookie extension\n"
-                      "3. Export cookies in Netscape format\n"
-                      "4. Save as instagram_cookies.txt\n"
-                      "5. Set INSTAGRAM_COOKIES_FILE=instagram_cookies.txt in .env"
+                error=(
+                    "Instagram requires authentication.\n\n"
+                    "Easiest fix — set your session ID in .env:\n"
+                    "1. Open instagram.com in Chrome and log in\n"
+                    "2. Press F12 → Application → Cookies → instagram.com\n"
+                    "3. Find 'sessionid' cookie — copy its Value\n"
+                    "4. Add to .env:  INSTAGRAM_SESSION_ID=<value>\n"
+                    "5. Restart the bot"
+                )
             )
-        else:
-            return MediaResult(
-                post_url=url,
-                media_type='unknown',
-                file_path='',
-                file_size_bytes=0,
-                error=f"Download failed: {error_msg}"
-            )
-    
+        return MediaResult(
+            post_url=url,
+            media_type='unknown',
+            file_path='',
+            file_size_bytes=0,
+            error=f"Download failed: {error_msg}"
+        )
+
+    _cleanup_temp_cookie(cookies_path)
     return MediaResult(
         post_url=url,
         media_type='unknown',
