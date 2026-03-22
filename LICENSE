@@ -1,0 +1,31 @@
+MIT License
+
+Copyright (c) 2024
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+1. This software is for **NON-COMMERCIAL USE ONLY**.
+2. The software is provided "AS IS", without warranty of any kind.
+3. If you use this code or parts of it, you must give appropriate credit.
+
+COMMERCIAL USE IS STRICTLY PROHIBITED. This includes, but is not limited to:
+- Using this software in any commercial product or service
+- Modifying and redistributing as part of a commercial offering
+- Using this software to provide services to third parties for payment
+
+For commercial licensing inquiries, please contact the author.
+
+---
+
+THIRD-PARTY LICENSES:
+
+This project uses the following open-source libraries:
+- python-telegram-bot: BSD-3-Clause License
+- yt-dlp: Unlicense
+- groq: Proprietary (groq.com)
+- python-dotenv: BSD-3-Clause License
