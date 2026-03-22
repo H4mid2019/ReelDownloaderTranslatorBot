@@ -1,6 +1,6 @@
 """
 Language detection and translation using Groq LLM API.
-Handles Bulgarian to English translation and language detection.
+Handles translation of any non-English language to English.
 """
 import groq
 from config import GROQ_API_KEY, TRANSLATION_MODEL
@@ -9,10 +9,8 @@ from config import GROQ_API_KEY, TRANSLATION_MODEL
 class Translator:
     """Handles language detection and translation using Groq LLM."""
     
-    # Language codes and names mapping
-    BULGARIAN_CODES = {'bg', 'bul', 'bulgarian'}
+    # English language codes
     ENGLISH_CODES = {'en', 'eng', 'english'}
-    LIKELY_LANGUAGES = {'bg', 'en'}  # Most expected languages
     
     def __init__(self):
         self.client = groq.Groq(api_key=GROQ_API_KEY)
@@ -21,7 +19,7 @@ class Translator:
     def detect_language(self, text: str) -> dict:
         """
         Detect the language of the given text.
-        Prioritizes English and Bulgarian as these are the expected languages.
+        Uses character analysis and LLM to determine language.
         
         Args:
             text: The text to analyze
@@ -37,37 +35,31 @@ class Translator:
                 'error': "No text provided for language detection"
             }
         
-        # Short text might not have enough information
-        if len(text.strip()) < 10:
+        # Check for Cyrillic characters (likely Bulgarian, Russian, Ukrainian, etc.)
+        cyrillic_pattern = any('\u0400' <= c <= '\u04FF' for c in text)
+        if cyrillic_pattern:
             return {
-                'language': 'en',
-                'language_name': 'English',
-                'confidence': 0.5,
-                'error': None,
-                'note': 'Text too short for reliable detection, defaulting to English'
+                'language': 'cyrillic',
+                'language_name': 'Cyrillic (likely Bulgarian/Russian)',
+                'confidence': 0.8,
+                'error': None
             }
         
-        prompt = f"""Analyze the following text and determine if it is in:
-1. Bulgarian (bg) - Uses Cyrillic alphabet: а б в г д е ж з и й к л м н о п р с т у ф х ц ч ш щ ъ ь ю я
-2. English (en) - Uses Latin alphabet
-3. Another language
+        # Use LLM for more precise detection
+        prompt = f"""Analyze the following text and determine its language.
+Reply with ONLY one word:
 
-Text to analyze:
-\"\"\"{text[:500]}\"\"\"  (showing first 500 characters)
+Text: "{text[:300]}"
 
-Respond ONLY with one of these exact formats:
-- "LANGUAGE: english" (if it's English)
-- "LANGUAGE: bulgarian" (if it's Bulgarian)
-- "LANGUAGE: bulgarian" (if it contains Cyrillic characters)
-- "LANGUAGE: other" (if it's another language)
+Possible languages: English, Bulgarian, Spanish, French, German, Italian, Portuguese, Russian, Ukrainian, Polish, Turkish, Arabic, Chinese, Japanese, Korean, Hindi, Other
 
-Be especially careful - if the text contains ANY Cyrillic characters, it's Bulgarian."""
+Reply with just the language name."""
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a language detection assistant. Respond with only the language format requested."},
+                    {"role": "system", "content": "You are a language detection assistant."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
@@ -76,28 +68,41 @@ Be especially careful - if the text contains ANY Cyrillic characters, it's Bulga
             
             result = response.choices[0].message.content.strip().lower()
             
-            # Parse the response
-            if 'bulgarian' in result:
-                return {
-                    'language': 'bg',
-                    'language_name': 'Bulgarian',
-                    'confidence': 0.95,
-                    'error': None
-                }
-            elif 'english' in result:
-                return {
-                    'language': 'en',
-                    'language_name': 'English',
-                    'confidence': 0.95,
-                    'error': None
-                }
+            # Map to language codes
+            if 'english' in result:
+                return {'language': 'en', 'language_name': 'English', 'confidence': 0.95, 'error': None}
+            elif 'bulgarian' in result:
+                return {'language': 'bg', 'language_name': 'Bulgarian', 'confidence': 0.95, 'error': None}
+            elif 'russian' in result:
+                return {'language': 'ru', 'language_name': 'Russian', 'confidence': 0.95, 'error': None}
+            elif 'ukrainian' in result:
+                return {'language': 'uk', 'language_name': 'Ukrainian', 'confidence': 0.95, 'error': None}
+            elif 'spanish' in result:
+                return {'language': 'es', 'language_name': 'Spanish', 'confidence': 0.95, 'error': None}
+            elif 'french' in result:
+                return {'language': 'fr', 'language_name': 'French', 'confidence': 0.95, 'error': None}
+            elif 'german' in result:
+                return {'language': 'de', 'language_name': 'German', 'confidence': 0.95, 'error': None}
+            elif 'italian' in result:
+                return {'language': 'it', 'language_name': 'Italian', 'confidence': 0.95, 'error': None}
+            elif 'portuguese' in result:
+                return {'language': 'pt', 'language_name': 'Portuguese', 'confidence': 0.95, 'error': None}
+            elif 'polish' in result:
+                return {'language': 'pl', 'language_name': 'Polish', 'confidence': 0.95, 'error': None}
+            elif 'turkish' in result:
+                return {'language': 'tr', 'language_name': 'Turkish', 'confidence': 0.95, 'error': None}
+            elif 'arabic' in result:
+                return {'language': 'ar', 'language_name': 'Arabic', 'confidence': 0.95, 'error': None}
+            elif 'chinese' in result:
+                return {'language': 'zh', 'language_name': 'Chinese', 'confidence': 0.95, 'error': None}
+            elif 'japanese' in result:
+                return {'language': 'ja', 'language_name': 'Japanese', 'confidence': 0.95, 'error': None}
+            elif 'korean' in result:
+                return {'language': 'ko', 'language_name': 'Korean', 'confidence': 0.95, 'error': None}
+            elif 'hindi' in result:
+                return {'language': 'hi', 'language_name': 'Hindi', 'confidence': 0.95, 'error': None}
             else:
-                return {
-                    'language': 'other',
-                    'language_name': 'Other',
-                    'confidence': 0.5,
-                    'error': None
-                }
+                return {'language': 'other', 'language_name': 'Other', 'confidence': 0.5, 'error': None}
                 
         except Exception as e:
             return {
@@ -107,39 +112,40 @@ Be especially careful - if the text contains ANY Cyrillic characters, it's Bulga
                 'error': f"Language detection error: {str(e)}"
             }
     
-    def translate_bulgarian_to_english(self, text: str) -> dict:
+    def translate_to_english(self, text: str, source_language: str = "unknown") -> dict:
         """
-        Translate Bulgarian text to English.
+        Translate text to English.
         
         Args:
-            text: Bulgarian text to translate
+            text: Text to translate
+            source_language: Name of the source language (for better translation)
         
         Returns:
-            dict with 'translation', 'source_lang', 'target_lang', 'error'
+            dict with 'translation', 'error'
         """
         if not text or not text.strip():
             return {
                 'translation': '',
-                'source_lang': 'bg',
-                'target_lang': 'en',
                 'error': 'No text provided for translation'
             }
         
-        prompt = f"""Translate the following Bulgarian text to English. 
-Maintain the meaning, tone, and style of the original.
-If there are any names, keep them as is.
-If there are any phrases that don't translate directly, provide a natural English equivalent.
+        prompt = f"""Translate the following text to English.
+Source language: {source_language}
 
-Bulgarian text:
+Maintain the meaning, tone, and style of the original.
+If there are names, keep them as is.
+If there are phrases that don't translate directly, provide a natural English equivalent.
+
+Text to translate:
 \"\"\"{text}\"\"\"
 
-Provide only the English translation, nothing else."""
+Provide ONLY the English translation, nothing else."""
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a professional translator specializing in Bulgarian to English translation. Provide accurate, natural translations."},
+                    {"role": "system", "content": f"You are a professional translator. Translate {source_language} to English accurately."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
@@ -150,33 +156,27 @@ Provide only the English translation, nothing else."""
             
             return {
                 'translation': translation,
-                'source_lang': 'bg',
-                'target_lang': 'en',
                 'error': None
             }
             
         except groq.RateLimitError:
             return {
                 'translation': '',
-                'source_lang': 'bg',
-                'target_lang': 'en',
                 'error': "Rate limit exceeded. Please try again later."
             }
         except Exception as e:
             return {
                 'translation': '',
-                'source_lang': 'bg',
-                'target_lang': 'en',
                 'error': f"Translation error: {str(e)}"
             }
     
     def process_transcript(self, transcript: str, hint_language: str = None) -> dict:
         """
-        Process a transcript: detect language and translate if Bulgarian.
+        Process a transcript: detect language and translate to English if needed.
         
         Args:
             transcript: The transcribed text
-            hint_language: Optional language hint from Whisper
+            hint_language: Optional language code from Whisper
         
         Returns:
             dict with all relevant information
@@ -185,10 +185,8 @@ Provide only the English translation, nothing else."""
             'original_transcript': transcript,
             'detected_language': None,
             'detected_language_name': None,
-            'is_bulgarian': False,
             'is_english': False,
             'english_translation': None,
-            'final_output': None,
             'error': None
         }
         
@@ -196,54 +194,32 @@ Provide only the English translation, nothing else."""
             result['error'] = 'Empty transcript'
             return result
         
-        # First, try to detect language
+        # Use hint from Whisper if available
         if hint_language:
-            # Use hint if provided (from Whisper)
-            if hint_language.lower() in self.BULGARIAN_CODES:
-                result['detected_language'] = 'bg'
-                result['detected_language_name'] = 'Bulgarian'
-            elif hint_language.lower() in self.ENGLISH_CODES:
-                result['detected_language'] = 'en'
-                result['detected_language_name'] = 'English'
-            else:
-                # Try detection anyway
-                detection = self.detect_language(transcript)
-                result['detected_language'] = detection['language']
-                result['detected_language_name'] = detection['language_name']
-                result['error'] = detection['error']
+            result['detected_language'] = hint_language.lower()
+            result['detected_language_name'] = hint_language.title()
+            result['is_english'] = hint_language.lower() in self.ENGLISH_CODES
         else:
             # Detect language
             detection = self.detect_language(transcript)
             result['detected_language'] = detection['language']
             result['detected_language_name'] = detection['language_name']
-            result['error'] = detection['error']
+            result['is_english'] = detection['language'] in self.ENGLISH_CODES
+            if detection['error']:
+                result['error'] = detection['error']
         
-        # Determine if Bulgarian or English
-        if result['detected_language'] in self.BULGARIAN_CODES:
-            result['is_bulgarian'] = True
-            result['is_english'] = False
-            
-            # Translate to English
-            translation_result = self.translate_bulgarian_to_english(transcript)
+        # If not English, translate to English
+        if not result['is_english']:
+            translation_result = self.translate_to_english(
+                transcript, 
+                result['detected_language_name']
+            )
             result['english_translation'] = translation_result['translation']
-            result['final_output'] = translation_result['translation']
             if translation_result['error']:
                 result['error'] = translation_result['error']
-                
-        elif result['detected_language'] in self.ENGLISH_CODES:
-            result['is_bulgarian'] = False
-            result['is_english'] = True
-            result['final_output'] = transcript  # No translation needed
-            
         else:
-            # Unknown language - still try to translate if possible
-            result['is_bulgarian'] = False
-            result['is_english'] = False
-            translation_result = self.translate_bulgarian_to_english(transcript)
-            result['english_translation'] = translation_result['translation']
-            result['final_output'] = transcript + "\n\n(Note: Language could not be determined. Above is the original transcript.)"
-            if translation_result['error']:
-                result['error'] = translation_result['error']
+            # English - no translation needed
+            result['english_translation'] = None
         
         return result
 

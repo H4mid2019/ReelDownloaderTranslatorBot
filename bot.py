@@ -5,8 +5,9 @@ Supports both images and videos from public Instagram posts.
 import asyncio
 import logging
 import os
+import subprocess
 import tempfile
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -14,10 +15,9 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.constants import ParseMode
 
 from config import TELEGRAM_BOT_TOKEN, MAX_VIDEO_SIZE_MB, MAX_VIDEO_SIZE_BYTES
-from downloader import download_instagram_post, is_instagram_url, normalize_instagram_url
+from downloader import download_instagram_post, is_instagram_url
 from transcriber import Transcriber
 from translator import Translator
 
@@ -35,8 +35,10 @@ DISCLAIMER = """
 • Free for personal/non-commercial use only
 • Commercial use is strictly prohibited
 • Use at your own risk
-• View source: [GitHub/Repository]
 """
+
+# Chunk size for splitting large videos (45MB to stay under 50MB Telegram limit)
+VIDEO_CHUNK_SIZE_BYTES = 45 * 1024 * 1024
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -45,7 +47,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Welcome to Instagram Downloader Bot!\n\n"
         "I can download Instagram posts (images & videos) and transcribe them.\n\n"
         "📝 Commands:\n"
-        "/download <instagram_url> - Download and process a post\n"
+        "/d <instagram_url> - Download and process a post\n"
         "/help - Show help message\n\n"
         "Supported URL formats:\n"
         "• https://www.instagram.com/p/POST_ID/\n"
@@ -59,198 +61,77 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command."""
     await update.message.reply_text(
         "📖 How to use this bot:\n\n"
-        "1️⃣ Send an Instagram URL with /download\n"
-        "   Example: /download https://www.instagram.com/p/ABC123/\n\n"
+        "1️⃣ Send an Instagram URL with /d\n"
+        "   Example: /d https://www.instagram.com/p/ABC123/\n\n"
         "2️⃣ For videos:\n"
-        "   • Videos ≤ 50MB: I'll send the video + transcript\n"
-        "   • Videos > 50MB: I'll send only the transcript\n\n"
-        "3️⃣ Transcription:\n"
-        "   • English videos: Full transcript\n"
-        "   • Bulgarian videos: Transcript + English translation\n\n"
+        "   • Videos ≤ 50MB: I'll send the video\n"
+        "   • Videos > 50MB: I'll split and send all parts\n\n"
+        "3️⃣ Transcription & Translation:\n"
+        "   • Auto-detects video language\n"
+        "   • Persian videos: Video sent, no transcription needed\n"
+        "   • English videos: Video + transcript\n"
+        "   • Other languages: Video + transcript + English translation\n\n"
         "⚠️ Note: Only public Instagram posts are supported.\n\n"
         + DISCLAIMER
     )
 
 
-async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def split_video(video_path: str, chunk_size_bytes: int = VIDEO_CHUNK_SIZE_BYTES) -> list:
     """
-    Main command handler for /download.
-    Downloads Instagram post, processes video, sends results.
-    Works in both private chats and group chats.
+    Split a video file into chunks of approximately chunk_size_bytes.
+    Returns a list of file paths for the chunks.
+    Uses ffmpeg to split by time segments proportional to chunk size.
     """
-    user = update.message.from_user
-    logger.info(f"User {user.first_name} ({user.id}) triggered /download")
-    
-    # Extract URL from command
-    if not context.args:
-        await update.message.reply_text(
-            "❌ Please provide an Instagram URL.\n"
-            "Usage: /download <instagram_url>\n\n"
-            "Example: /download https://www.instagram.com/p/ABC123/\n\n"
-            + DISCLAIMER
-        )
-        return
-    
-    url = ' '.join(context.args)
-    
-    # Validate URL
-    if not is_instagram_url(url):
-        await update.message.reply_text(
-            "❌ Invalid Instagram URL.\n\n"
-            "Supported formats:\n"
-            "• https://www.instagram.com/p/POST_ID/\n"
-            "• https://www.instagram.com/reel/REEL_ID/\n"
-            "• https://www.instagram.com/tv/VIDEO_ID/\n\n"
-            + DISCLAIMER
-        )
-        return
-    
-    # Send initial processing message
-    status_msg = await update.message.reply_text("⏳ Downloading Instagram post...")
-    
+    file_size = os.path.getsize(video_path)
+    if file_size <= chunk_size_bytes:
+        return [video_path]
+
+    # Get video duration using ffprobe
     try:
-        # Download the post
-        result = download_instagram_post(url)
-        
-        if result.error:
-            await status_msg.edit_text(f"❌ Download failed: {result.error}")
-            return
-        
-        file_size_mb = result.file_size_bytes / (1024 * 1024)
-        
-        # Handle IMAGE
-        if result.media_type == 'image':
-            await status_msg.edit_text("📷 Image downloaded! Sending...")
-            
-            await update.message.reply_photo(
-                photo=open(result.file_path, 'rb'),
-                caption=f"🖼️ Instagram Image\n📏 Size: {file_size_mb:.2f} MB",
-            )
-            
-            await status_msg.delete()
-            cleanup_file(result.file_path)
-            return
-        
-        # Handle VIDEO
-        if result.media_type == 'video':
-            # Check file size
-            if result.file_size_bytes > MAX_VIDEO_SIZE_BYTES:
-                await status_msg.edit_text(
-                    f"📹 Video downloaded ({file_size_mb:.2f} MB)\n"
-                    f"⚠️ Video exceeds {MAX_VIDEO_SIZE_MB}MB limit.\n"
-                    "🔄 Processing transcript only..."
-                )
-                video_too_large = True
-            else:
-                await status_msg.edit_text(
-                    f"📹 Video downloaded ({file_size_mb:.2f} MB)\n"
-                    "🔄 Transcribing audio..."
-                )
-                video_too_large = False
-            
-            # Transcribe video
-            transcriber = Transcriber()
-            transcript_result = transcriber.transcribe_video(result.file_path)
-            
-            if transcript_result['error']:
-                await status_msg.edit_text(
-                    f"❌ Transcription failed: {transcript_result['error']}"
-                )
-                cleanup_file(result.file_path)
-                return
-            
-            transcript = transcript_result['text']
-            
-            if not transcript or not transcript.strip():
-                await status_msg.edit_text(
-                    "⚠️ No speech detected in this video."
-                )
-                if not video_too_large:
-                    await update.message.reply_video(
-                        video=open(result.file_path, 'rb'),
-                        caption="🎬 Video (no speech detected)"
-                    )
-                cleanup_file(result.file_path)
-                return
-            
-            # Detect language and translate
-            translator = Translator()
-            processed = translator.process_transcript(
-                transcript, 
-                hint_language=transcript_result.get('language')
-            )
-            
-            # Build response message
-            response_parts = []
-            
-            # Always show original transcript
-            response_parts.append("📝 **Transcript:**")
-            response_parts.append(processed['original_transcript'])
-            
-            # Add translation if Bulgarian
-            if processed['is_bulgarian']:
-                response_parts.append("\n🌐 **English Translation:**")
-                response_parts.append(processed['english_translation'])
-            elif processed['is_english']:
-                response_parts.append("\n🌐 Language: English (no translation needed)")
-            else:
-                response_parts.append("\n🌐 Language: Unknown")
-            
-            # Show detected language info
-            if processed.get('error'):
-                response_parts.append(f"\n⚠️ Note: {processed['error']}")
-            
-            response_text = "\n".join(response_parts)
-            
-            # Split message if too long (Telegram limit ~4096 chars)
-            if len(response_text) > 4000:
-                # Send transcript first
-                await status_msg.edit_text(
-                    "📝 **Transcript:**\n" + processed['original_transcript'][:4000]
-                )
-                # Send rest
-                remaining = response_text[4000:]
-                for i in range(0, len(remaining), 4000):
-                    await update.message.reply_text(remaining[i:i+4000])
-                
-                # Send translation if Bulgarian
-                if processed['is_bulgarian'] and processed['english_translation']:
-                    trans_parts = ["🌐 **English Translation:**"]
-                    trans_parts.append(processed['english_translation'])
-                    trans_text = "\n".join(trans_parts)
-                    
-                    for i in range(0, len(trans_text), 4000):
-                        await update.message.reply_text(trans_text[i:i+4000])
-            else:
-                await status_msg.edit_text(response_text)
-            
-            # Send video if within size limit
-            if not video_too_large:
-                await update.message.reply_video(
-                    video=open(result.file_path, 'rb'),
-                    caption=f"🎬 Instagram Video\n📏 Size: {file_size_mb:.2f} MB"
-                )
-            else:
-                await update.message.reply_text(
-                    f"⚠️ Video file ({file_size_mb:.2f} MB) exceeds {MAX_VIDEO_SIZE_MB}MB Telegram limit.\n"
-                    "Transcript and translation are provided above."
-                )
-            
-            cleanup_file(result.file_path)
-            return
-        
-        # Unknown media type
-        await status_msg.edit_text(
-            "❌ Unsupported media type or post format."
+        result = subprocess.run(
+            [
+                'ffprobe', '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                video_path
+            ],
+            capture_output=True, text=True, timeout=60
         )
-        cleanup_file(result.file_path)
-        
+        total_duration = float(result.stdout.strip())
     except Exception as e:
-        logger.error(f"Error processing download: {e}", exc_info=True)
-        await status_msg.edit_text(
-            f"❌ An error occurred: {str(e)}\n"
-            "Please try again later."
-        )
+        logger.error(f"Failed to get video duration: {e}")
+        return [video_path]  # Return original if we can't split
+
+    # Calculate number of chunks needed
+    num_chunks = int(file_size / chunk_size_bytes) + 1
+    chunk_duration = total_duration / num_chunks
+
+    chunk_dir = tempfile.mkdtemp(prefix="video_chunks_")
+    chunk_paths = []
+
+    for i in range(num_chunks):
+        start_time = i * chunk_duration
+        chunk_path = os.path.join(chunk_dir, f"chunk_{i+1:03d}.mp4")
+
+        cmd = [
+            'ffmpeg',
+            '-ss', str(start_time),
+            '-i', video_path,
+            '-t', str(chunk_duration),
+            '-c', 'copy',  # No re-encoding for speed
+            '-avoid_negative_ts', '1',
+            '-y',
+            chunk_path
+        ]
+
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+            if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 0:
+                chunk_paths.append(chunk_path)
+        except Exception as e:
+            logger.error(f"Failed to create chunk {i+1}: {e}")
+
+    return chunk_paths if chunk_paths else [video_path]
 
 
 def cleanup_file(file_path: str):
@@ -263,34 +144,286 @@ def cleanup_file(file_path: str):
         logger.warning(f"Failed to cleanup file {file_path}: {e}")
 
 
+def cleanup_chunks(chunk_paths: list, original_path: str):
+    """Clean up chunk files and their directory (if different from original)."""
+    for chunk in chunk_paths:
+        if chunk != original_path:
+            cleanup_file(chunk)
+            # Try to remove the chunk directory
+            try:
+                chunk_dir = os.path.dirname(chunk)
+                if os.path.isdir(chunk_dir) and not os.listdir(chunk_dir):
+                    os.rmdir(chunk_dir)
+            except Exception:
+                pass
+
+
+async def send_video_or_chunks(
+    update: Update,
+    video_path: str,
+    file_size_bytes: int,
+    file_size_mb: float,
+    lang_name: str,
+    status_msg=None
+) -> bool:
+    """
+    Send a video or split+send chunks if too large.
+    Returns True if sent successfully, False if error.
+    Updates or deletes status_msg if provided.
+    """
+    if file_size_bytes <= MAX_VIDEO_SIZE_BYTES:
+        # Send directly
+        if status_msg:
+            await status_msg.edit_text("📤 Sending video...")
+        await update.message.reply_video(
+            video=open(video_path, 'rb'),
+            caption=f"🎬 Instagram Video\n📏 Size: {file_size_mb:.2f} MB\n🔊 Language: {lang_name}"
+        )
+        return True
+    else:
+        # Split and send chunks
+        if status_msg:
+            await status_msg.edit_text(
+                f"📹 Video is {file_size_mb:.2f} MB — splitting into parts to send..."
+            )
+        chunk_paths = split_video(video_path)
+
+        if len(chunk_paths) == 1 and chunk_paths[0] == video_path:
+            # Splitting failed or not needed (shouldn't happen here)
+            if status_msg:
+                await status_msg.edit_text(
+                    f"⚠️ Video file ({file_size_mb:.2f} MB) exceeds {MAX_VIDEO_SIZE_MB}MB Telegram limit and could not be split."
+                )
+            return False
+
+        total_parts = len(chunk_paths)
+        for idx, chunk_path in enumerate(chunk_paths, 1):
+            chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
+            await update.message.reply_video(
+                video=open(chunk_path, 'rb'),
+                caption=(
+                    f"🎬 Instagram Video — Part {idx}/{total_parts}\n"
+                    f"📏 Part size: {chunk_size_mb:.2f} MB\n"
+                    f"🔊 Language: {lang_name}"
+                )
+            )
+
+        cleanup_chunks(chunk_paths, video_path)
+
+        if status_msg:
+            await status_msg.delete()
+        return True
+
+
+async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Main command handler for /download.
+    Downloads Instagram post, sends video first, then transcribes and translates.
+    Works in both private chats and group chats.
+    """
+    user = update.message.from_user
+    logger.info(f"User {user.first_name} ({user.id}) triggered /download")
+
+    # Extract URL from command
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Please provide an Instagram URL.\n"
+            "Usage: /d <instagram_url>\n\n"
+            "Example: /d https://www.instagram.com/p/ABC123/\n\n"
+            + DISCLAIMER
+        )
+        return
+
+    url = ' '.join(context.args)
+
+    # Validate URL
+    if not is_instagram_url(url):
+        await update.message.reply_text(
+            "❌ Invalid Instagram URL.\n\n"
+            "Supported formats:\n"
+            "• https://www.instagram.com/p/POST_ID/\n"
+            "• https://www.instagram.com/reel/REEL_ID/\n"
+            "• https://www.instagram.com/tv/VIDEO_ID/\n\n"
+            + DISCLAIMER
+        )
+        return
+
+    # Send initial processing message
+    status_msg = await update.message.reply_text("⏳ Downloading Instagram post...")
+
+    try:
+        # Download the post
+        result = download_instagram_post(url)
+
+        if result.error:
+            await status_msg.edit_text(f"❌ Download failed: {result.error}")
+            return
+
+        file_size_mb = result.file_size_bytes / (1024 * 1024)
+
+        # ── Handle IMAGE ───────────────────────────────────────────────────────
+        if result.media_type == 'image':
+            await status_msg.edit_text("📷 Image downloaded! Sending...")
+            await update.message.reply_photo(
+                photo=open(result.file_path, 'rb'),
+                caption=f"🖼️ Instagram Image\n📏 Size: {file_size_mb:.2f} MB",
+            )
+            await status_msg.delete()
+            cleanup_file(result.file_path)
+            return
+
+        # ── Handle VIDEO ───────────────────────────────────────────────────────
+        if result.media_type == 'video':
+
+            # ── STEP 1: Transcribe first (just to detect language) ─────────────
+            # We need language detection before sending so we can caption correctly.
+            # For Persian, we skip transcription entirely AFTER detecting language.
+            await status_msg.edit_text(
+                f"📹 Video downloaded ({file_size_mb:.2f} MB)\n"
+                "🔍 Detecting language..."
+            )
+
+            transcriber = Transcriber()
+            transcript_result = transcriber.transcribe_video(result.file_path)
+
+            if transcript_result['error'] and not transcript_result.get('skipped'):
+                # Transcription/detection actually failed (not just skipped for Persian)
+                # Still try to send the video
+                await status_msg.edit_text(
+                    f"⚠️ Language detection failed: {transcript_result['error']}\n"
+                    "📤 Sending video anyway..."
+                )
+                await send_video_or_chunks(
+                    update, result.file_path, result.file_size_bytes, file_size_mb,
+                    "Unknown", status_msg=None
+                )
+                await status_msg.delete()
+                cleanup_file(result.file_path)
+                return
+
+            detected_lang = transcript_result.get('detected_language')
+            detected_lang_name = transcript_result.get('language_name', 'Unknown')
+            is_skipped = transcript_result.get('skipped', False)  # True for Persian
+            auto_detected = transcript_result.get('auto_detected', True)
+
+            # ── STEP 2: Send video (always, for any language) ──────────────────
+            await status_msg.edit_text(
+                f"🔍 Detected language: **{detected_lang_name}**\n"
+                "📤 Sending video..."
+            )
+
+            video_sent = await send_video_or_chunks(
+                update, result.file_path, result.file_size_bytes, file_size_mb,
+                detected_lang_name, status_msg=None
+            )
+
+            # ── STEP 3: Handle Persian — no transcription/translation needed ───
+            if is_skipped:
+                if video_sent:
+                    await status_msg.edit_text(
+                        f"🔍 **Detected Language:** {detected_lang_name}\n\n"
+                        "Persian language doesn't need transcription or translation.\n\n"
+                    )
+                else:
+                    await status_msg.edit_text(
+                        f"🔍 **Detected Language:** {detected_lang_name}\n\n"
+                        "Persian language doesn't need transcription or translation.\n\n"
+                        f"⚠️ Video ({file_size_mb:.2f} MB) could not be sent."
+                    )
+                cleanup_file(result.file_path)
+                return
+
+            # ── STEP 4: Handle no speech detected ─────────────────────────────
+            transcript = transcript_result.get('text', '')
+            if not transcript or not transcript.strip():
+                await status_msg.edit_text("⚠️ No speech detected in this video.")
+                cleanup_file(result.file_path)
+                return
+
+            # ── STEP 5: Translate if needed ────────────────────────────────────
+            await status_msg.edit_text("🌐 Translating transcript...")
+
+            translator = Translator()
+            processed = translator.process_transcript(transcript, hint_language=detected_lang)
+
+            # ── STEP 6: Build and send response message ────────────────────────
+            detection_note = "(auto-detected)" if auto_detected else "(user specified)"
+            response_parts = []
+            response_parts.append(f"🔍 **Detected Language:** {detected_lang_name} {detection_note}")
+            response_parts.append("")
+            response_parts.append("📝 **Transcript:**")
+            response_parts.append(processed['original_transcript'])
+
+            if processed['is_english']:
+                response_parts.append("\n✅ Language is English — no translation needed")
+            elif processed.get('english_translation'):
+                response_parts.append("\n🌐 **English Translation:**")
+                response_parts.append(processed['english_translation'])
+            else:
+                response_parts.append("\n⚠️ Translation not available")
+
+            if processed.get('error'):
+                response_parts.append(f"\n⚠️ Note: {processed['error']}")
+
+            response_text = "\n".join(response_parts)
+
+            # Split message if too long (Telegram ~4096 char limit)
+            if len(response_text) > 4000:
+                await status_msg.edit_text(
+                    f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
+                    "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
+                )
+
+                remaining = processed['original_transcript'][3500:]
+                if remaining:
+                    for i in range(0, len(remaining), 4000):
+                        await update.message.reply_text(remaining[i:i+4000])
+
+                if not processed['is_english'] and processed.get('english_translation'):
+                    trans_text = "🌐 **English Translation:**\n" + processed['english_translation']
+                    for i in range(0, len(trans_text), 4000):
+                        await update.message.reply_text(trans_text[i:i+4000])
+            else:
+                await status_msg.edit_text(response_text)
+
+            cleanup_file(result.file_path)
+            return
+
+        # Unknown media type
+        await status_msg.edit_text("❌ Unsupported media type or post format.")
+        cleanup_file(result.file_path)
+
+    except Exception as e:
+        logger.error(f"Error processing download: {e}", exc_info=True)
+        await status_msg.edit_text(
+            f"❌ An error occurred: {str(e)}\n"
+            "Please try again later."
+        )
+
+
 def main():
     """Start the bot."""
-    # Validate configuration
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN not set in environment or .env file!")
         return
-    
+
     logger.info("Starting Instagram Downloader Bot...")
-    
-    # Create application
+
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Add handlers
+
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("download", download_command))
-    
-    # Handle any other messages (not commands)
+    application.add_handler(CommandHandler("d", download_command))
+
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, 
-                      lambda u, c: u.message.reply_text(
-                          "Send /download <instagram_url> to download a post.\n"
-                          "Or use /help for more information.\n\n"
-                          + DISCLAIMER
-                      ))
+        MessageHandler(filters.TEXT & ~filters.COMMAND,
+                       lambda u, c: u.message.reply_text(
+                           "Send /d <instagram_url> to download a post.\n"
+                           "Or use /help for more information.\n\n"
+                           + DISCLAIMER
+                       ))
     )
-    
-    # Start the bot
+
     logger.info("Bot is running! Press Ctrl+C to stop.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
