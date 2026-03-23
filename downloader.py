@@ -110,6 +110,9 @@ def _base_ydl_opts(download_dir: str) -> dict:
         'extract_flat': False,
         'extractor_retries': 3,
         'fragment_retries': 3,
+        # Cap at Instagram Reel standard (720x1280 portrait or 1280p landscape equiv) to prevent huge files
+        # Portrait videos have height=1280, width=720; landscape height<=720
+        'format': 'bestvideo[height<=1280][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1280]+bestaudio/best[height<=1280]/best',
     }
 
 
@@ -178,6 +181,14 @@ def process_info_result(info: dict, original_url: str, download_dir: str, platfo
                 file_path = potential_path
                 file_size = os.path.getsize(potential_path)
                 break
+
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Downloaded {platform}: {os.path.basename(file_path) if file_path else 'NO_FILE'}, "
+                f"size={file_size/(1024*1024):.2f}MB, "
+                f"duration={info.get('duration', 'N/A')}s, "
+                f"height={info.get('height', 'N/A')}p, "
+                f"format_id={info.get('format_id', 'N/A')}")
     
     if not file_path:
         return MediaResult(
