@@ -20,6 +20,7 @@ from config import TELEGRAM_BOT_TOKEN, MAX_VIDEO_SIZE_MB, MAX_VIDEO_SIZE_BYTES
 from downloader import download_video, detect_platform
 from transcriber import Transcriber
 from translator import Translator
+from typing import Optional
 
 # Enable logging
 logging.basicConfig(
@@ -228,53 +229,6 @@ async def send_video_or_chunks(
         if status_msg:
             await status_msg.delete()
         return True
-    """
-    Send a video or split+send chunks if too large.
-    Returns True if sent successfully, False if error.
-    Updates or deletes status_msg if provided.
-    """
-    if file_size_bytes <= MAX_VIDEO_SIZE_BYTES:
-        # Send directly
-        if status_msg:
-            await status_msg.edit_text("📤 Sending video...")
-        await update.message.reply_video(
-            video=open(video_path, 'rb'),
-            caption=f"🎬 Video ({result.platform})\n📏 Size: {file_size_mb:.2f} MB\n🔊 Language: {lang_name}"
-        )
-        return True
-    else:
-        # Split and send chunks
-        if status_msg:
-            await status_msg.edit_text(
-                f"📹 Video is {file_size_mb:.2f} MB — splitting into parts to send..."
-            )
-        chunk_paths = split_video(video_path)
-
-        if len(chunk_paths) == 1 and chunk_paths[0] == video_path:
-            # Splitting failed or not needed (shouldn't happen here)
-            if status_msg:
-                await status_msg.edit_text(
-                    f"⚠️ Video file ({file_size_mb:.2f} MB) exceeds {MAX_VIDEO_SIZE_MB}MB Telegram limit and could not be split."
-                )
-            return False
-
-        total_parts = len(chunk_paths)
-        for idx, chunk_path in enumerate(chunk_paths, 1):
-            chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
-            await update.message.reply_video(
-                video=open(chunk_path, 'rb'),
-            caption=(
-                f"🎬 Video ({result.platform}) — Part {idx}/{total_parts}\n"
-                f"📏 Part size: {chunk_size_mb:.2f} MB\n"
-                f"🔊 Language: {lang_name}"
-            )
-            )
-
-        cleanup_chunks(chunk_paths, video_path)
-
-        if status_msg:
-            await status_msg.delete()
-        return True
 
 
 async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -346,9 +300,13 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await send_video_or_chunks(
                     update, result.file_path, result.file_size_bytes, file_size_mb,
-                    "Unknown", status_msg=None
+                    "Unknown", result.platform, None, status_msg=None
                 )
-                await status_msg.delete()
+                if status_msg:
+                    try:
+                        await status_msg.delete()
+                    except:
+                        pass
                 cleanup_file(result.file_path)
                 return
 
@@ -368,26 +326,37 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 detected_lang_name, result.platform, result.tweet_text, status_msg
             )
 
+            # Handle status message safely after potential deletion in send_video_or_chunks
+            if status_msg:
+                try:
+                    await status_msg.edit_text("✅ Video sent successfully!")
+                except:
+                    pass  # Message was deleted or invalid
+
             # ── STEP 3: Handle Persian — no transcription/translation needed ───
             if is_skipped:
-                if video_sent:
-                    await status_msg.edit_text(
-                        f"🔍 **Detected Language:** {detected_lang_name}\n\n"
-                        "Persian language doesn't need transcription or translation.\n\n"
-                    )
-                else:
-                    await status_msg.edit_text(
-                        f"🔍 **Detected Language:** {detected_lang_name}\n\n"
-                        "Persian language doesn't need transcription or translation.\n\n"
-                        f"⚠️ Video ({file_size_mb:.2f} MB) could not be sent."
-                    )
+                if status_msg:
+                    try:
+                        await status_msg.edit_text(
+                            f"🔍 **Detected Language:** {detected_lang_name}\n\n"
+                            "Persian language doesn't need transcription or translation.\n\n"
+                        )
+                    except:
+                        await update.message.reply_text(
+                            f"🔍 **Detected Language:** {detected_lang_name} (Persian)\n\n"
+                            "No transcription/translation needed."
+                        )
                 cleanup_file(result.file_path)
                 return
 
             # ── STEP 4: Handle no speech detected ─────────────────────────────
             transcript = transcript_result.get('text', '')
             if not transcript or not transcript.strip():
-                await status_msg.edit_text("⚠️ No speech detected in this video.")
+                if status_msg:
+                    try:
+                        await status_msg.edit_text("⚠️ No speech detected in this video.")
+                    except:
+                        await update.message.reply_text("⚠️ No speech detected in this video.")
                 cleanup_file(result.file_path)
                 return
 
@@ -420,10 +389,17 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Split message if too long (Telegram ~4096 char limit)
             if len(response_text) > 4000:
-                await status_msg.edit_text(
-                    f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
-                    "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
-                )
+                if status_msg:
+                    try:
+                        await status_msg.edit_text(
+                            f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
+                            "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
+                        )
+                    except:
+                        await update.message.reply_text(
+                            f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
+                            "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
+                        )
 
                 remaining = processed['original_transcript'][3500:]
                 if remaining:
@@ -435,7 +411,11 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     for i in range(0, len(trans_text), 4000):
                         await update.message.reply_text(trans_text[i:i+4000])
             else:
-                await status_msg.edit_text(response_text)
+                if status_msg:
+                    try:
+                        await status_msg.edit_text(response_text)
+                    except:
+                        await update.message.reply_text(response_text)
 
             cleanup_file(result.file_path)
             return
