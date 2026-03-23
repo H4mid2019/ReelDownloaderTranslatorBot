@@ -182,15 +182,17 @@ async def send_video_or_chunks(
             subprocess.run(cmd, check=True, capture_output=True, timeout=120)
             if os.path.exists(remuxed_path):
                 video_path = remuxed_path
-                file_size_bytes = os.path.getsize(video_path)
-                file_size_mb = file_size_bytes / (1024 * 1024)
         except Exception as e:
             logger.warning(f"Remux failed: {e}")
 
-    if file_size_bytes <= MAX_VIDEO_SIZE_BYTES:
+    # Always check ACTUAL on-disk size before deciding single vs split (prevents 413 errors)
+    actual_size_bytes = os.path.getsize(video_path)
+    actual_size_mb = actual_size_bytes / (1024 * 1024)
+
+    if actual_size_bytes <= MAX_VIDEO_SIZE_BYTES:
         if status_msg:
             await status_msg.edit_text("📤 Sending video...")
-        caption = f"🎬 Video ({platform})\n📏 Size: {file_size_mb:.2f} MB"
+        caption = f"🎬 Video ({platform})\n📏 Size: {actual_size_mb:.2f} MB"
         if tweet_text:
             caption = tweet_text[:200] + '\n\n' + caption
         caption += f"\n🔊 Language: {lang_name}"
@@ -202,14 +204,14 @@ async def send_video_or_chunks(
     else:
         if status_msg:
             await status_msg.edit_text(
-                f"📹 Video is {file_size_mb:.2f} MB — splitting into parts..."
+                f"📹 Video is {actual_size_mb:.2f} MB — splitting into parts..."
             )
         chunk_paths = split_video(video_path)
 
         if len(chunk_paths) == 1 and chunk_paths[0] == video_path:
             if status_msg:
                 await status_msg.edit_text(
-                    f"⚠️ Video ({file_size_mb:.2f} MB) exceeds {MAX_VIDEO_SIZE_MB}MB limit and could not be split."
+                    f"⚠️ Video ({actual_size_mb:.2f} MB) exceeds {MAX_VIDEO_SIZE_MB}MB limit and could not be split."
                 )
             return False
 
@@ -301,7 +303,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await send_video_or_chunks(
                     update, result.file_path, result.file_size_bytes, file_size_mb,
-                    "Unknown", result.platform, None, status_msg=None
+                    "Unknown", result.platform, tweet_text=None, status_msg=None
                 )
                 if status_msg:
                     try:
