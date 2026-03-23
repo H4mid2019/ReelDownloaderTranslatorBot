@@ -169,16 +169,17 @@ async def send_video_or_chunks(
     status_msg=None
 ) -> bool:
     """Send video or split chunks. Remuxes for Telegram compatibility if needed."""
-    # Remux for Telegram (H.264 MP4)
+    # Remux for Telegram (stream copy + faststart)
     remuxed_path = video_path
     if file_size_bytes > 30 * 1024 * 1024:  # Remux large videos
         remuxed_path = video_path + '.telegram.mp4'
         cmd = [
-            'ffmpeg', '-i', video_path, '-c:v', 'libx264', '-c:a', 'aac',
+            'ffmpeg', '-i', video_path,
+            '-c', 'copy',
             '-movflags', '+faststart', '-y', remuxed_path
         ]
         try:
-            subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+            subprocess.run(cmd, check=True, capture_output=True, timeout=120)
             if os.path.exists(remuxed_path):
                 video_path = remuxed_path
                 file_size_bytes = os.path.getsize(video_path)
