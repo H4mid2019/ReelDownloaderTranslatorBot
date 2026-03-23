@@ -10,7 +10,7 @@ import yt_dlp
 from dataclasses import dataclass
 from typing import Optional
 import time
-from config import INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID
+from config import INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID, YOUTUBE_COOKIES_FILE
 
 
 @dataclass
@@ -245,7 +245,12 @@ def download_video(url: str) -> MediaResult:
     target_url = normalize_instagram_url(url) if platform == 'instagram' else url
     download_dir = tempfile.mkdtemp(prefix=f"{platform}_")
     
-    cookies_path = _resolve_cookies_file() if platform == 'instagram' else None
+    cookies_path = None
+    if platform == 'instagram':
+        cookies_path = _resolve_cookies_file()
+    elif platform == 'youtube':
+        if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+            cookies_path = YOUTUBE_COOKIES_FILE
     
     # Method 1: Desktop user-agent
     ydl_opts = get_yt_dlp_options(download_dir, cookies_path)
