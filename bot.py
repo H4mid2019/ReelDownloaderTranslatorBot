@@ -163,8 +163,71 @@ async def send_video_or_chunks(
     file_size_bytes: int,
     file_size_mb: float,
     lang_name: str,
+    platform: str,
+    tweet_text: Optional[str] = None,
     status_msg=None
 ) -> bool:
+    """Send video or split chunks. Remuxes for Telegram compatibility if needed."""
+    # Remux for Telegram (H.264 MP4)
+    remuxed_path = video_path
+    if file_size_bytes > 30 * 1024 * 1024:  # Remux large videos
+        remuxed_path = video_path + '.telegram.mp4'
+        cmd = [
+            'ffmpeg', '-i', video_path, '-c:v', 'libx264', '-c:a', 'aac',
+            '-movflags', '+faststart', '-y', remuxed_path
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+            if os.path.exists(remuxed_path):
+                video_path = remuxed_path
+                file_size_bytes = os.path.getsize(video_path)
+                file_size_mb = file_size_bytes / (1024 * 1024)
+        except Exception as e:
+            logger.warning(f"Remux failed: {e}")
+
+    if file_size_bytes <= MAX_VIDEO_SIZE_BYTES:
+        if status_msg:
+            await status_msg.edit_text("📤 Sending video...")
+        caption = f"🎬 Video ({platform})\n📏 Size: {file_size_mb:.2f} MB"
+        if tweet_text:
+            caption = tweet_text[:200] + '\n\n' + caption
+        caption += f"\n🔊 Language: {lang_name}"
+        await update.message.reply_video(
+            video=open(video_path, 'rb'),
+            caption=caption
+        )
+        return True
+    else:
+        if status_msg:
+            await status_msg.edit_text(
+                f"📹 Video is {file_size_mb:.2f} MB — splitting into parts..."
+            )
+        chunk_paths = split_video(video_path)
+
+        if len(chunk_paths) == 1 and chunk_paths[0] == video_path:
+            if status_msg:
+                await status_msg.edit_text(
+                    f"⚠️ Video ({file_size_mb:.2f} MB) exceeds {MAX_VIDEO_SIZE_MB}MB limit and could not be split."
+                )
+            return False
+
+        total_parts = len(chunk_paths)
+        for idx, chunk_path in enumerate(chunk_paths, 1):
+            chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
+            caption = f"🎬 Video ({platform}) — Part {idx}/{total_parts}\n📏 Part: {chunk_size_mb:.2f} MB\n🔊 Language: {lang_name}"
+            if tweet_text:
+                caption = tweet_text[:200] + '\n\n' + caption
+            await update.message.reply_video(
+                video=open(chunk_path, 'rb'),
+                caption=caption
+            )
+
+        cleanup_chunks(chunk_paths, video_path)
+        if remuxed_path != video_path and os.path.exists(remuxed_path):
+            os.remove(remuxed_path)
+        if status_msg:
+            await status_msg.delete()
+        return True
     """
     Send a video or split+send chunks if too large.
     Returns True if sent successfully, False if error.
@@ -302,7 +365,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             video_sent = await send_video_or_chunks(
                 update, result.file_path, result.file_size_bytes, file_size_mb,
-                detected_lang_name, status_msg=None
+                detected_lang_name, result.platform, result.tweet_text, status_msg
             )
 
             # ── STEP 3: Handle Persian — no transcription/translation needed ───
