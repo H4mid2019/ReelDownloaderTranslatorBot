@@ -10,7 +10,7 @@ import yt_dlp
 from dataclasses import dataclass
 from typing import Optional
 import time
-from config import INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID, YOUTUBE_COOKIES_FILE
+from config import INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID
 
 
 @dataclass
@@ -44,24 +44,14 @@ def is_twitter_url(url: str) -> bool:
     return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
 
 
-def is_youtube_short_url(url: str) -> bool:
-    """Check if URL is YouTube Short."""
-    patterns = [
-        r'(https?://)?(www\.)?youtube\.com/shorts/[\w-]+',
-        r'(https?://)?(www\.)?youtu\.be/[\w-]+',
-        r'(https?://)?(www\.)?youtube\.com/watch\?v=[\w-]+',
-    ]
-    return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
 
 
 def detect_platform(url: str) -> Optional[str]:
-    """Detect platform: 'instagram', 'twitter', 'youtube', or None."""
+    """Detect platform: 'instagram', 'twitter', or None."""
     if is_instagram_video_url(url):
         return 'instagram'
     if is_twitter_url(url):
         return 'twitter'
-    if is_youtube_short_url(url):
-        return 'youtube'
     return None
 
 
@@ -232,7 +222,7 @@ def download_video(url: str) -> MediaResult:
         return MediaResult(
             post_url=url,
             platform='unknown',
-            error="Unsupported platform. Supported: Instagram Reels/TV, X/Twitter videos, YouTube Shorts."
+            error="Unsupported platform. Supported: Instagram Reels/TV, X/Twitter videos."
         )
     
     if platform == 'instagram' and not is_instagram_video_url(url):
@@ -245,12 +235,7 @@ def download_video(url: str) -> MediaResult:
     target_url = normalize_instagram_url(url) if platform == 'instagram' else url
     download_dir = tempfile.mkdtemp(prefix=f"{platform}_")
     
-    cookies_path = None
-    if platform == 'instagram':
-        cookies_path = _resolve_cookies_file()
-    elif platform == 'youtube':
-        if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
-            cookies_path = YOUTUBE_COOKIES_FILE
+    cookies_path = _resolve_cookies_file() if platform == 'instagram' else None
     
     # Method 1: Desktop user-agent
     ydl_opts = get_yt_dlp_options(download_dir, cookies_path)

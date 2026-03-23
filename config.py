@@ -21,8 +21,6 @@ INSTAGRAM_SESSION_ID = os.getenv("INSTAGRAM_SESSION_ID")
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
 INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
 
-# YouTube cookies (for age-restricted Shorts)
-YOUTUBE_COOKIES_FILE = os.getenv("YOUTUBE_COOKIES_FILE")
 
 # Model configuration (can be changed via .env)
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3")

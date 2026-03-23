@@ -45,15 +45,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     await update.message.reply_text(
         "👋 Welcome to Video Downloader Bot!\n\n"
-        "I can download videos from Instagram Reels/TV, X/Twitter, YouTube Shorts "
+        "I can download videos from Instagram Reels/TV, X/Twitter "
         "and transcribe/translate them.\n\n"
         "📝 Commands:\n"
         "/d <video_url> - Download and process\n"
         "/help - Show help\n\n"
         "Supported:\n"
         "• Instagram: /reel/, /reels/, /tv/ (no /p/ posts)\n"
-        "• X/Twitter: x.com/username/status/ID\n"
-        "• YouTube: youtube.com/shorts/ID, youtu.be/ID\n\n"
+        "• X/Twitter: x.com/username/status/ID\n\n"
         + DISCLAIMER
     )
 
@@ -65,8 +64,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1️⃣ `/d <video_url>`\n\n"
         "✅ **Supported platforms:**\n"
         "• Instagram Reels/TV (no /p/ posts)\n"
-        "• X/Twitter status videos\n"
-        "• YouTube Shorts\n\n"
+        "• X/Twitter status videos\n\n"
         "2️⃣ **Videos >50MB** auto-split\n\n"
         "3️⃣ **Transcription/Translation:**\n"
         "• Persian: video only\n"
@@ -178,7 +176,7 @@ async def send_video_or_chunks(
             await status_msg.edit_text("📤 Sending video...")
         await update.message.reply_video(
             video=open(video_path, 'rb'),
-            caption=f"🎬 Instagram Video\n📏 Size: {file_size_mb:.2f} MB\n🔊 Language: {lang_name}"
+            caption=f"🎬 Video ({result.platform})\n📏 Size: {file_size_mb:.2f} MB\n🔊 Language: {lang_name}"
         )
         return True
     else:
@@ -202,11 +200,11 @@ async def send_video_or_chunks(
             chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
             await update.message.reply_video(
                 video=open(chunk_path, 'rb'),
-                caption=(
-                    f"🎬 Instagram Video — Part {idx}/{total_parts}\n"
-                    f"📏 Part size: {chunk_size_mb:.2f} MB\n"
-                    f"🔊 Language: {lang_name}"
-                )
+            caption=(
+                f"🎬 Video ({result.platform}) — Part {idx}/{total_parts}\n"
+                f"📏 Part size: {chunk_size_mb:.2f} MB\n"
+                f"🔊 Language: {lang_name}"
+            )
             )
 
         cleanup_chunks(chunk_paths, video_path)
@@ -244,8 +242,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Unsupported URL.\n\n"
             "Supported:\n"
             "• Instagram Reels/TV: instagram.com/reel/...\n"
-            "• X/Twitter: x.com/user/status/ID\n"
-            "• YouTube Shorts: youtube.com/shorts/...\n\n"
+            "• X/Twitter: x.com/user/status/ID\n\n"
             + DISCLAIMER
         )
         return
