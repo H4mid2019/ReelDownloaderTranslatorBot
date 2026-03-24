@@ -194,7 +194,7 @@ async def send_video_or_chunks(
             await status_msg.edit_text("📤 Sending video...")
         caption = f"🎬 Video ({platform})\n📏 Size: {actual_size_mb:.2f} MB"
         if tweet_text:
-            caption = tweet_text[:200] + '\n\n' + caption
+            caption = tweet_text[:850] + '\n\n' + caption
         caption += f"\n🔊 Language: {lang_name}"
         await update.message.reply_video(
             video=open(video_path, 'rb'),
@@ -220,7 +220,7 @@ async def send_video_or_chunks(
             chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
             caption = f"🎬 Video ({platform}) — Part {idx}/{total_parts}\n📏 Part: {chunk_size_mb:.2f} MB\n🔊 Language: {lang_name}"
             if tweet_text:
-                caption = tweet_text[:200] + '\n\n' + caption
+                caption = tweet_text[:850] + '\n\n' + caption
             await update.message.reply_video(
                 video=open(chunk_path, 'rb'),
                 caption=caption

@@ -262,7 +262,7 @@ def download_video(url: str) -> MediaResult:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(target_url, download=True)
             if info:
-                tweet_text = info.get('description', '')[:400] if platform == 'twitter' else None
+                tweet_text = info.get('description', '')[:4000] if platform == 'twitter' else None
                 _cleanup_temp_cookie(cookies_path)
                 return process_info_result(info, url, download_dir, platform, tweet_text)
     except Exception:
@@ -274,7 +274,7 @@ def download_video(url: str) -> MediaResult:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(target_url, download=True)
             if info:
-                tweet_text = info.get('description', '')[:400] if platform == 'twitter' else None
+                tweet_text = info.get('description', '')[:4000] if platform == 'twitter' else None
                 _cleanup_temp_cookie(cookies_path)
                 return process_info_result(info, url, download_dir, platform, tweet_text)
     except Exception as e:
@@ -293,7 +293,7 @@ def download_video(url: str) -> MediaResult:
                             post_url=url,
                             platform=platform,
                             media_type='text',
-                            tweet_text=text[:400]
+                            tweet_text=text[:4000]
                         )
             except Exception:
                 pass
