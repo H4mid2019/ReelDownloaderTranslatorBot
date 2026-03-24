@@ -10,7 +10,7 @@ import yt_dlp
 from dataclasses import dataclass
 from typing import Optional
 import time
-from config import INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID
+from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID
 
 
 @dataclass
@@ -191,6 +191,14 @@ def process_info_result(info: dict, original_url: str, download_dir: str, platfo
                 f"format_id={info.get('format_id', 'N/A')}")
     
     if not file_path:
+        if platform == 'twitter' and tweet_text:
+            return MediaResult(
+                post_url=original_url,
+                platform=platform,
+                media_type='text',
+                tweet_text=tweet_text,
+                error=None
+            )
         return MediaResult(
             post_url=original_url,
             platform=platform,
@@ -270,6 +278,15 @@ def download_video(url: str) -> MediaResult:
                 _cleanup_temp_cookie(cookies_path)
                 return process_info_result(info, url, download_dir, platform, tweet_text)
     except Exception as e:
+        if platform == 'twitter':
+            try:
+                # Try getting info without downloading, which doesn't error out on text-only tweets
+                with yt_dlp.YoutubeDL(get_yt_dlp_options(download_dir, cookies_path)) as ydl:
+                    info = ydl.extract_info(target_url, download=False)
+                    if info and info.get('description'):
+                        return process_info_result(info, url, download_dir, platform, info.get('description')[:400])
+            except Exception:
+                pass
         _cleanup_temp_cookie(cookies_path)
         error_msg = str(e)
         

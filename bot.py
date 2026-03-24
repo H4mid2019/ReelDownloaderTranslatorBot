@@ -2,9 +2,9 @@
 Telegram bot for downloading Instagram posts with transcription and translation.
 Supports both images and videos from public Instagram posts.
 """
-import asyncio
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from telegram import Update
@@ -235,25 +235,43 @@ async def send_video_or_chunks(
 
 
 async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Main command handler for /download.
-    Downloads Instagram post, sends video first, then transcribes and translates.
-    Works in both private chats and group chats.
-    """
-    user = update.message.from_user
-    logger.info(f"User {user.first_name} ({user.id}) triggered /download")
-
-    # Extract URL from command
+    """Main command handler for /download."""
     if not context.args:
         await update.message.reply_text(
-            "❌ Please provide an Instagram URL.\n"
-            "Usage: /d <instagram_url>\n\n"
-            "Example: /d https://www.instagram.com/p/ABC123/\n\n"
+            "❌ Please provide a URL.\n"
+            "Usage: /d <url>\n\n"
+            "Example: /d https://www.instagram.com/reel/ABC123/\n\n"
             + DISCLAIMER
         )
         return
 
     url = ' '.join(context.args)
+    await process_url(update, context, url)
+
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle regular text messages to auto-detect supported URLs."""
+    if not update.message:
+        return
+        
+    text = update.message.text or update.message.caption or ""
+    
+    # Check if there are any supported URLs in the text
+    urls = re.findall(r'(https?://[^\s]+)', text)
+    
+    for url in urls:
+        if detect_platform(url):
+            await process_url(update, context, url)
+            return
+
+
+async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
+    """
+    Process a detected or provided URL.
+    Downloads Instagram post or Tweet, sends video first, then transcribes and translates.
+    """
+    user = update.message.from_user
+    logger.info(f"User {user.first_name} ({user.id}) triggered processing for {url}")
 
     # Detect platform
     platform = detect_platform(url)
@@ -276,6 +294,12 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if result.error:
             await status_msg.edit_text(f"❌ Download failed: {result.error}")
+            return
+
+        # ── Handle TEXT ONLY ───────────────────────────────────────────────────
+        if result.media_type == 'text':
+            text = result.tweet_text or "No text available."
+            await status_msg.edit_text(f"📄 **Twitter Text:**\n\n{text}")
             return
 
         file_size_mb = result.file_size_bytes / (1024 * 1024)
@@ -308,7 +332,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if status_msg:
                     try:
                         await status_msg.delete()
-                    except:
+                    except Exception:
                         pass
                 cleanup_file(result.file_path)
                 return
@@ -324,7 +348,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📤 Sending video..."
             )
 
-            video_sent = await send_video_or_chunks(
+            await send_video_or_chunks(
                 update, result.file_path, result.file_size_bytes, file_size_mb,
                 detected_lang_name, result.platform, result.tweet_text, status_msg
             )
@@ -333,7 +357,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if status_msg:
                 try:
                     await status_msg.edit_text("✅ Video sent successfully!")
-                except:
+                except Exception:
                     pass  # Message was deleted or invalid
 
             # ── STEP 3: Handle Persian — no transcription/translation needed ───
@@ -344,7 +368,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"🔍 **Detected Language:** {detected_lang_name}\n\n"
                             "Persian language doesn't need transcription or translation.\n\n"
                         )
-                    except:
+                    except Exception:
                         await update.message.reply_text(
                             f"🔍 **Detected Language:** {detected_lang_name} (Persian)\n\n"
                             "No transcription/translation needed."
@@ -358,7 +382,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if status_msg:
                     try:
                         await status_msg.edit_text("⚠️ No speech detected in this video.")
-                    except:
+                    except Exception:
                         await update.message.reply_text("⚠️ No speech detected in this video.")
                 cleanup_file(result.file_path)
                 return
@@ -398,7 +422,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
                             "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
                         )
-                    except:
+                    except Exception:
                         await update.message.reply_text(
                             f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
                             "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
@@ -417,7 +441,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if status_msg:
                     try:
                         await status_msg.edit_text(response_text)
-                    except:
+                    except Exception:
                         await update.message.reply_text(response_text)
 
             cleanup_file(result.file_path)
@@ -461,12 +485,7 @@ def main():
     application.add_handler(CommandHandler("d", download_command))
 
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND,
-                       lambda u, c: u.message.reply_text(
-                           "Send /d <instagram_url> to download a post.\n"
-                           "Or use /help for more information.\n\n"
-                           + DISCLAIMER
-                       ))
+        MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_text_message)
     )
 
     logger.info("Bot is running! Press Ctrl+C to stop.")
