@@ -280,11 +280,21 @@ def download_video(url: str) -> MediaResult:
     except Exception as e:
         if platform == 'twitter':
             try:
-                # Try getting info without downloading, which doesn't error out on text-only tweets
-                with yt_dlp.YoutubeDL(get_yt_dlp_options(download_dir, cookies_path)) as ydl:
-                    info = ydl.extract_info(target_url, download=False)
-                    if info and info.get('description'):
-                        return process_info_result(info, url, download_dir, platform, info.get('description')[:400])
+                import subprocess, json
+                import urllib.parse
+                parsed = urllib.parse.urlparse(url)
+                api_url = f"https://api.vxtwitter.com{parsed.path}"
+                res = subprocess.run(['curl', '-s', api_url], capture_output=True, text=True, timeout=10)
+                if res.returncode == 0:
+                    data = json.loads(res.stdout)
+                    text = data.get('text')
+                    if text:
+                        return MediaResult(
+                            post_url=url,
+                            platform=platform,
+                            media_type='text',
+                            tweet_text=text[:400]
+                        )
             except Exception:
                 pass
         _cleanup_temp_cookie(cookies_path)
