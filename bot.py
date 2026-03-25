@@ -170,6 +170,7 @@ async def send_video_or_chunks(
     lang_name: str,
     platform: str,
     post_caption: Optional[str] = None,
+    translated_caption: Optional[str] = None,
     status_msg=None
 ) -> bool:
     """Send video or split chunks. Remuxes for Telegram compatibility if needed."""
@@ -196,10 +197,20 @@ async def send_video_or_chunks(
     if actual_size_bytes <= MAX_VIDEO_SIZE_BYTES:
         if status_msg:
             await status_msg.edit_text("📤 Sending video...")
-        caption = f"🎬 Video ({platform})\n📏 Size: {actual_size_mb:.2f} MB"
-        if post_caption:
-            caption = f"{post_caption[:850]}\n\n{caption}"
-        caption += f"\n🔊 Language: {lang_name}"
+        
+        footer = f"\n\n🎬 Video ({platform})\n📏 Size: {actual_size_mb:.2f} MB\n🔊 Language: {lang_name}"
+        if post_caption and translated_caption:
+            sep = "\n\n🌐 **Translation:**\n"
+            max_len = 1024 - len(footer) - len(sep)
+            half = max_len // 2
+            trunc_orig = post_caption[:half-3] + "..." if len(post_caption) > half else post_caption
+            trunc_trans = translated_caption[:max_len-len(trunc_orig)-3] + "..." if len(translated_caption) > (max_len-len(trunc_orig)) else translated_caption
+            caption = f"{trunc_orig}{sep}{trunc_trans}{footer}"
+        elif post_caption:
+            caption = f"{post_caption[:1024-len(footer)-3]}{footer}"
+        else:
+            caption = footer.strip()
+            
         if not update.message:
             return False
         await update.message.reply_video(
@@ -224,9 +235,19 @@ async def send_video_or_chunks(
         total_parts = len(chunk_paths)
         for idx, chunk_path in enumerate(chunk_paths, 1):
             chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
-            caption = f"🎬 Video ({platform}) — Part {idx}/{total_parts}\n📏 Part: {chunk_size_mb:.2f} MB\n🔊 Language: {lang_name}"
-            if post_caption:
-                caption = f"{post_caption[:850]}\n\n{caption}"
+            footer = f"\n\n🎬 Video ({platform}) — Part {idx}/{total_parts}\n📏 Part: {chunk_size_mb:.2f} MB\n🔊 Language: {lang_name}"
+            if post_caption and translated_caption:
+                sep = "\n\n🌐 **Translation:**\n"
+                max_len = 1024 - len(footer) - len(sep)
+                half = max_len // 2
+                trunc_orig = post_caption[:half-3] + "..." if len(post_caption) > half else post_caption
+                trunc_trans = translated_caption[:max_len-len(trunc_orig)-3] + "..." if len(translated_caption) > (max_len-len(trunc_orig)) else translated_caption
+                caption = f"{trunc_orig}{sep}{trunc_trans}{footer}"
+            elif post_caption:
+                caption = f"{post_caption[:1024-len(footer)-3]}{footer}"
+            else:
+                caption = footer.strip()
+                
             if not update.message:
                 continue
             await update.message.reply_video(
@@ -308,12 +329,37 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             await status_msg.edit_text(f"❌ Download failed: {result.error}")
             return
 
+        # Translate post text if necessary
+        translated_caption = None
+        text_to_translate = result.caption if result.media_type != 'text' else result.tweet_text
+        if text_to_translate and text_to_translate.strip():
+            try:
+                if status_msg:
+                    await status_msg.edit_text("🌐 Checking language & translating text...")
+                trans = Translator()
+                t_res = trans.process_transcript(text_to_translate[:1000]) # Use first 1000 chars for lang detection + trans
+                if t_res.get('english_translation') and not t_res.get('error'):
+                    translated_caption = t_res['english_translation']
+            except Exception as e:
+                logger.warning(f"Text translation failed: {e}")
+
         # ── Handle PHOTO ───────────────────────────────────────────────────────
         if result.media_type == 'photo':
-            await status_msg.edit_text("📤 Sending photo...")
-            caption = f"📷 Photo ({platform})"
-            if result.caption:
-                caption = result.caption[:850] + '\n\n' + caption
+            if status_msg:
+                await status_msg.edit_text("📤 Sending photo...")
+            
+            footer = f"\n\n📷 Photo ({platform})"
+            if result.caption and translated_caption:
+                sep = "\n\n🌐 **Translation:**\n"
+                max_len = 1024 - len(footer) - len(sep)
+                half = max_len // 2
+                trunc_orig = result.caption[:half-3] + "..." if len(result.caption) > half else result.caption
+                trunc_trans = translated_caption[:max_len-len(trunc_orig)-3] + "..." if len(translated_caption) > (max_len-len(trunc_orig)) else translated_caption
+                caption = f"{trunc_orig}{sep}{trunc_trans}{footer}"
+            elif result.caption:
+                caption = f"{result.caption[:1024-len(footer)-3]}{footer}"
+            else:
+                caption = footer.strip()
             
             # Send photo safely
             try:
@@ -332,7 +378,20 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
         # ── Handle TEXT ONLY ───────────────────────────────────────────────────
         if result.media_type == 'text':
             text = result.tweet_text or "No text available."
-            await status_msg.edit_text(f"📄 **Twitter Text:**\n\n{text}")
+            if translated_caption:
+                msg_text = f"📄 **Twitter Text:**\n\n{text}\n\n🌐 **Translation:**\n{translated_caption}"
+            else:
+                msg_text = f"📄 **Twitter Text:**\n\n{text}"
+            
+            for i in range(0, len(msg_text), 4000):
+                if update.message:
+                    await update.message.reply_text(msg_text[i:i+4000])
+                    
+            if status_msg:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
             return
 
         file_size_mb = result.file_size_bytes / (1024 * 1024)
@@ -360,7 +419,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 )
                 await send_video_or_chunks(
                     update, result.file_path, result.file_size_bytes, file_size_mb,
-                    "Unknown", result.platform, post_caption=result.caption, status_msg=None
+                    "Unknown", result.platform, post_caption=result.caption, translated_caption=translated_caption, status_msg=None
                 )
                 if status_msg:
                     try:
@@ -383,7 +442,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
 
             await send_video_or_chunks(
                 update, result.file_path, result.file_size_bytes, file_size_mb,
-                detected_lang_name, result.platform, result.caption, status_msg
+                detected_lang_name, result.platform, result.caption, translated_caption, status_msg
             )
 
             # Handle status message safely after potential deletion in send_video_or_chunks

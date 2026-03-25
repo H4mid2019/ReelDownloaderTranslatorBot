@@ -53,7 +53,7 @@ Reply with ONLY one word:
 
 Text: "{text[:300]}"
 
-Possible languages: English, Bulgarian, Spanish, French, German, Italian, Portuguese, Russian, Ukrainian, Polish, Turkish, Arabic, Chinese, Japanese, Korean, Hindi, Other
+Possible languages: English, Persian, Bulgarian, Spanish, French, German, Italian, Portuguese, Russian, Ukrainian, Polish, Turkish, Arabic, Chinese, Japanese, Korean, Hindi, Other
 
 Reply with just the language name."""
 
@@ -73,6 +73,8 @@ Reply with just the language name."""
             # Map to language codes
             if 'english' in result:
                 return {'language': 'en', 'language_name': 'English', 'confidence': 0.95, 'error': None}
+            elif 'persian' in result or 'farsi' in result:
+                return {'language': 'fa', 'language_name': 'Persian', 'confidence': 0.95, 'error': None}
             elif 'bulgarian' in result:
                 return {'language': 'bg', 'language_name': 'Bulgarian', 'confidence': 0.95, 'error': None}
             elif 'russian' in result:
@@ -188,6 +190,7 @@ Provide ONLY the English translation, nothing else."""
             'detected_language': None,
             'detected_language_name': None,
             'is_english': False,
+            'is_persian': False,
             'english_translation': None,
             'error': None
         }
@@ -201,17 +204,19 @@ Provide ONLY the English translation, nothing else."""
             result['detected_language'] = hint_language.lower()
             result['detected_language_name'] = hint_language.title()
             result['is_english'] = hint_language.lower() in self.ENGLISH_CODES
+            result['is_persian'] = hint_language.lower() in ('fa', 'fas', 'per', 'persian')
         else:
             # Detect language
             detection = self.detect_language(transcript)
             result['detected_language'] = detection['language']
             result['detected_language_name'] = detection['language_name']
             result['is_english'] = detection['language'] in self.ENGLISH_CODES
+            result['is_persian'] = detection['language'] == 'fa'
             if detection['error']:
                 result['error'] = detection['error']
         
-        # If not English, translate to English
-        if not result['is_english']:
+        # If not English and not Persian, translate to English
+        if not result['is_english'] and not result['is_persian']:
             translation_result = self.translate_to_english(
                 transcript, 
                 str(result['detected_language_name'] or "unknown")
