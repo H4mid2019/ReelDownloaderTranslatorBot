@@ -7,6 +7,11 @@ import os
 import re
 import tempfile
 import yt_dlp
+
+# Fix for PermissionError on Windows Python 3.12 SSL keylogging
+if 'SSLKEYLOGFILE' not in os.environ:
+    os.environ['SSLKEYLOGFILE'] = os.path.join(tempfile.gettempdir(), 'yt_dlp_ssl.log')
+
 from dataclasses import dataclass
 from typing import Optional
 import time
@@ -30,8 +35,8 @@ class MediaResult:
 def is_instagram_video_url(url: str) -> bool:
     """Check if URL is Instagram video (reel/tv only, no /p/ posts)."""
     patterns = [
-        r'(https?://)?(www\.)?instagram\.com/(reel|reels|tv)/[\w-]+/?',
-        r'(https?://)?(www\.)?instagr\.am/(reel|reels|tv)/[\w-]+/?',
+        r'(https?://)?(www\.)?instagram\.com/(reel|reels|tv|p)/[\w-]+/?',
+        r'(https?://)?(www\.)?instagr\.am/(reel|reels|tv|p)/[\w-]+/?',
     ]
     return any(re.match(pattern, url, re.IGNORECASE) for pattern in patterns)
 
@@ -230,6 +235,70 @@ def _cleanup_temp_cookie(path: Optional[str]):
             pass
 
 
+
+def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
+    import subprocess, json, urllib.parse, time
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # List of public Cobalt mirrors to try
+    mirrors = [
+        "https://api.clxxped.lol/api/json",
+        "https://cobalt.api.vve.best/api/json",
+        "https://api.cobalt.best/api/json",
+        "https://cobalt.meowing.de/api/json"
+    ]
+
+    for api_url in mirrors:
+        try:
+            payload = json.dumps({"url": url})
+            res = subprocess.run([
+                'curl.exe', '-s', '-X', 'POST', api_url,
+                '-H', 'Accept: application/json',
+                '-H', 'Content-Type: application/json',
+                '-d', payload
+            ], capture_output=True, text=True, timeout=10)
+
+            if res.returncode != 0 or not res.stdout:
+                continue
+
+            data = json.loads(res.stdout)
+            if data.get('status') == 'error':
+                continue
+
+            media_url = ""
+            if data.get('status') in ['stream', 'redirect']:
+                media_url = data.get('url')
+            elif data.get('status') == 'picker':
+                picker_items = data.get('picker', [])
+                if picker_items:
+                    media_url = picker_items[0].get('url')
+
+            if not media_url:
+                continue
+
+            ext = '.mp4' if '.mp4' in media_url else '.jpg'
+            file_path = os.path.join(download_dir, f"ig_post_{int(time.time())}{ext}")
+
+            # Download the actual media
+            res_dl = subprocess.run(['curl.exe', '-s', '-L', '-o', file_path, media_url], timeout=60)
+            if res_dl.returncode != 0 or not os.path.exists(file_path):
+                continue
+
+            return MediaResult(
+                post_url=url,
+                platform='instagram',
+                media_type='video' if ext == '.mp4' else 'photo',
+                file_path=file_path,
+                file_size_bytes=os.path.getsize(file_path),
+                error=None
+            )
+        except Exception:
+            continue
+
+    return MediaResult(post_url=url, platform='instagram', error="All Cobalt mirrors failed to process this post.")
+
+
 def download_video(url: str) -> MediaResult:
     """
     Download video from Instagram Reels/TV, X/Twitter, or YouTube Shorts.
@@ -248,11 +317,15 @@ def download_video(url: str) -> MediaResult:
         return MediaResult(
             post_url=url,
             platform=platform,
-            error="❌ Instagram posts (/p/) not supported. Only Reels/TV videos."
+            error="❌ Unsupported Instagram URL format."
         )
     
     target_url = normalize_instagram_url(url) if platform == 'instagram' else url
     download_dir = tempfile.mkdtemp(prefix=f"{platform}_")
+    
+    # Use Cobalt API exclusively for Instagram /p/ posts as yt-dlp blocks them
+    if platform == 'instagram' and '/p/' in url:
+        return download_instagram_post_cobalt(url, download_dir)
     
     cookies_path = _resolve_cookies_file() if platform == 'instagram' else None
     

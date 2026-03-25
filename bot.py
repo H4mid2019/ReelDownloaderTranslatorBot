@@ -296,6 +296,26 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             await status_msg.edit_text(f"❌ Download failed: {result.error}")
             return
 
+        # ── Handle PHOTO ───────────────────────────────────────────────────────
+        if result.media_type == 'photo':
+            await status_msg.edit_text("📤 Sending photo...")
+            caption = f"📷 Photo ({platform})"
+            if result.caption:
+                caption = result.caption[:850] + '\n\n' + caption
+            
+            # Send photo safely
+            try:
+                await update.message.reply_photo(
+                    photo=open(result.file_path, 'rb'),
+                    caption=caption
+                )
+                await status_msg.edit_text("✅ Photo sent successfully!")
+            except Exception as e:
+                await status_msg.edit_text(f"⚠️ Failed to send photo: {e}")
+            finally:
+                cleanup_file(result.file_path)
+            return
+
         # ── Handle TEXT ONLY ───────────────────────────────────────────────────
         if result.media_type == 'text':
             text = result.tweet_text or "No text available."
