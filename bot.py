@@ -155,7 +155,7 @@ def cleanup_chunks(chunk_paths: list, original_path: str):
             cleanup_file(chunk)
             # Try to remove the chunk directory
             try:
-                chunk_dir = os.path.dirname(chunk)
+                chunk_dir = str(os.path.dirname(chunk))
                 if os.path.isdir(chunk_dir) and not os.listdir(chunk_dir):
                     os.rmdir(chunk_dir)
             except Exception:
@@ -169,7 +169,7 @@ async def send_video_or_chunks(
     file_size_mb: float,
     lang_name: str,
     platform: str,
-    tweet_text: Optional[str] = None,
+    post_caption: Optional[str] = None,
     status_msg=None
 ) -> bool:
     """Send video or split chunks. Remuxes for Telegram compatibility if needed."""
@@ -197,8 +197,8 @@ async def send_video_or_chunks(
         if status_msg:
             await status_msg.edit_text("📤 Sending video...")
         caption = f"🎬 Video ({platform})\n📏 Size: {actual_size_mb:.2f} MB"
-        if tweet_text:
-            caption = tweet_text[:850] + '\n\n' + caption
+        if post_caption:
+            caption = f"{post_caption[:850]}\n\n{caption}"
         caption += f"\n🔊 Language: {lang_name}"
         if not update.message:
             return False
@@ -225,8 +225,8 @@ async def send_video_or_chunks(
         for idx, chunk_path in enumerate(chunk_paths, 1):
             chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
             caption = f"🎬 Video ({platform}) — Part {idx}/{total_parts}\n📏 Part: {chunk_size_mb:.2f} MB\n🔊 Language: {lang_name}"
-            if tweet_text:
-                caption = tweet_text[:850] + '\n\n' + caption
+            if post_caption:
+                caption = f"{post_caption[:850]}\n\n{caption}"
             if not update.message:
                 continue
             await update.message.reply_video(
@@ -360,7 +360,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 )
                 await send_video_or_chunks(
                     update, result.file_path, result.file_size_bytes, file_size_mb,
-                    "Unknown", result.platform, tweet_text=None, status_msg=None
+                    "Unknown", result.platform, post_caption=result.caption, status_msg=None
                 )
                 if status_msg:
                     try:
@@ -383,7 +383,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
 
             await send_video_or_chunks(
                 update, result.file_path, result.file_size_bytes, file_size_mb,
-                detected_lang_name, result.platform, result.tweet_text, status_msg
+                detected_lang_name, result.platform, result.caption, status_msg
             )
 
             # Handle status message safely after potential deletion in send_video_or_chunks
@@ -439,8 +439,9 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             if processed['is_english']:
                 response_parts.append("\n✅ Language is English — no translation needed")
             elif processed.get('english_translation'):
+                trans_text = str(processed['english_translation'])
                 response_parts.append("\n🌐 **English Translation:**")
-                response_parts.append(processed['english_translation'])
+                response_parts.append(trans_text[:850])
             else:
                 response_parts.append("\n⚠️ Translation not available")
 

@@ -293,12 +293,19 @@ def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
             if res_dl.returncode != 0 or not os.path.exists(file_path):
                 continue
 
+            caption = data.get('text') or data.get('caption')
+            if not caption and data.get('status') == 'picker':
+                picker_items = data.get('picker', [])
+                if picker_items:
+                    caption = picker_items[0].get('text') or picker_items[0].get('caption')
+
             return MediaResult(
                 post_url=url,
                 platform='instagram',
                 media_type='video' if ext == '.mp4' else 'photo',
                 file_path=file_path,
                 file_size_bytes=os.path.getsize(file_path),
+                caption=caption,
                 error=None
             )
         except Exception:
@@ -312,9 +319,8 @@ def download_instagram_post_gallery_dl(url: str, download_dir: str, cookies_path
     logger = logging.getLogger(__name__)
     logger.info(f"Attempting gallery-dl for: {url}")
     
-    # gallery-dl -d download_dir --cookies cookies_path url
-    # Note: gallery-dl might create subdirectories, so we'll walk the temp dir
-    cmd = [os.path.join(".venv", "Scripts", "gallery-dl.exe"), "--dest", download_dir]
+    # Note: --write-metadata creates .json files with same name as media
+    cmd = [os.path.join(".venv", "Scripts", "gallery-dl.exe"), "--dest", download_dir, "--write-metadata"]
     if cookies_path:
         cmd.extend(["--cookies", cookies_path])
     cmd.append(url)
@@ -322,6 +328,24 @@ def download_instagram_post_gallery_dl(url: str, download_dir: str, cookies_path
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
         # Scan for ANY media file downloaded
+        captured_caption = None
+        
+        # Look for metadata first
+        for root, _, files in os.walk(download_dir):
+            for file in files:
+                if file.lower().endswith('.json'):
+                    try:
+                        with open(os.path.join(root, file), 'r', encoding='utf-8') as f:
+                            meta = json.load(f)
+                            # gallery-dl instagram metadata structure: meta[0]['content'] or similar
+                            # It's usually a list or dict depending on version/extractor
+                            if isinstance(meta, list) and len(meta) > 0:
+                                captured_caption = meta[0].get('content') or meta[0].get('description') or meta[0].get('caption')
+                            elif isinstance(meta, dict):
+                                captured_caption = meta.get('content') or meta.get('description') or meta.get('caption')
+                    except Exception:
+                        pass
+
         for root, _, files in os.walk(download_dir):
             for file in files:
                 if file.lower().endswith(('.mp4', '.mkv', '.mov', '.jpg', '.jpeg', '.png', '.webp')):
@@ -334,6 +358,7 @@ def download_instagram_post_gallery_dl(url: str, download_dir: str, cookies_path
                         media_type='video' if ext in ('.mp4', '.mkv', '.mov') else 'photo',
                         file_path=file_path,
                         file_size_bytes=file_size,
+                        caption=captured_caption,
                         error=None
                     )
     except Exception as e:
