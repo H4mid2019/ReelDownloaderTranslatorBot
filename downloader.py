@@ -6,6 +6,9 @@ Requires Instagram session cookies for posts (images/carousels).
 import os
 import re
 import tempfile
+import subprocess
+import json
+import logging
 import yt_dlp  # type: ignore[import-untyped]
 
 # Fix for PermissionError on Windows Python 3.12 SSL keylogging
@@ -128,6 +131,7 @@ def get_yt_dlp_options(download_dir: str, cookies_path: Optional[str] = None) ->
     Note: username/password login is broken in current yt-dlp Instagram extractor.
     """
     ydl_opts = _base_ydl_opts(download_dir)
+    ydl_opts['impersonate'] = 'chrome'  # Use curl-cffi impersonation
     ydl_opts['http_headers'] = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                       '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -150,6 +154,7 @@ def get_yt_dlp_options(download_dir: str, cookies_path: Optional[str] = None) ->
 def get_mobile_headers_options(download_dir: str, cookies_path: Optional[str] = None) -> dict:
     """Get options with mobile user-agent (sometimes works better for Reels)."""
     ydl_opts = _base_ydl_opts(download_dir)
+    ydl_opts['impersonate'] = 'chrome'
     ydl_opts['http_headers'] = {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
                       'AppleWebKit/605.1.15 (KHTML, like Gecko) '
@@ -237,17 +242,19 @@ def _cleanup_temp_cookie(path: Optional[str]):
 
 
 def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
-    import subprocess
-    import json
     import time
-    # Removed unused logging and logger to satisfy Ruff
 
     # List of public Cobalt mirrors to try
     mirrors = [
+        "https://co.wuk.sh/api/json",
+        "https://cobalt-api.hyper.lol/api/json",
         "https://api.clxxped.lol/api/json",
         "https://cobalt.api.vve.best/api/json",
         "https://api.cobalt.best/api/json",
-        "https://cobalt.meowing.de/api/json"
+        "https://cobalt.api.timelessnesses.me/api/json",
+        "https://api-dl.cgm.rs/api/json",
+        "https://cobalt.synzr.space/api/json",
+        "https://api.co.rooot.gay/api/json",
     ]
 
     for api_url in mirrors:
@@ -300,11 +307,45 @@ def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
     return MediaResult(post_url=url, platform='instagram', error="All Cobalt mirrors failed to process this post.")
 
 
+def download_instagram_post_gallery_dl(url: str, download_dir: str, cookies_path: Optional[str] = None) -> MediaResult:
+    """Tertiary fallback using gallery-dl."""
+    logger = logging.getLogger(__name__)
+    logger.info(f"Attempting gallery-dl for: {url}")
+    
+    # gallery-dl -d download_dir --cookies cookies_path url
+    # Note: gallery-dl might create subdirectories, so we'll walk the temp dir
+    cmd = [os.path.join(".venv", "Scripts", "gallery-dl.exe"), "--dest", download_dir]
+    if cookies_path:
+        cmd.extend(["--cookies", cookies_path])
+    cmd.append(url)
+    
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        # Scan for ANY media file downloaded
+        for root, _, files in os.walk(download_dir):
+            for file in files:
+                if file.lower().endswith(('.mp4', '.mkv', '.mov', '.jpg', '.jpeg', '.png', '.webp')):
+                    file_path = os.path.join(root, file)
+                    file_size = os.path.getsize(file_path)
+                    ext = os.path.splitext(file)[1].lower()
+                    return MediaResult(
+                        post_url=url,
+                        platform='instagram',
+                        media_type='video' if ext in ('.mp4', '.mkv', '.mov') else 'photo',
+                        file_path=file_path,
+                        file_size_bytes=file_size,
+                        error=None
+                    )
+    except Exception as e:
+        logger.error(f"gallery-dl failed: {e}")
+        
+    return MediaResult(post_url=url, platform='instagram', error="gallery-dl fallback failed")
+
+
 def download_video(url: str) -> MediaResult:
     """
     Download video from Instagram Reels/TV, X/Twitter, or YouTube Shorts.
-    
-    Rejects Instagram /p/ posts (images/carousels).
+    Supports multi-layered fallbacks for better reliability.
     """
     platform = detect_platform(url)
     if not platform:
@@ -323,92 +364,120 @@ def download_video(url: str) -> MediaResult:
     
     target_url = normalize_instagram_url(url) if platform == 'instagram' else url
     download_dir = tempfile.mkdtemp(prefix=f"{platform}_")
-    
-    # Use Cobalt API exclusively for Instagram /p/ posts as yt-dlp blocks them
-    if platform == 'instagram' and '/p/' in url:
-        return download_instagram_post_cobalt(url, download_dir)
-    
     cookies_path = _resolve_cookies_file() if platform == 'instagram' else None
+    logger = logging.getLogger(__name__)
+
+    # Use multi-layered fallback for Instagram /p/ posts (which yt-dlp blocks)
+    if platform == 'instagram' and '/p/' in url:
+        res = download_instagram_post_cobalt(url, download_dir)
+        if not res.error:
+            _cleanup_temp_cookie(cookies_path)
+            return res
+        # Fallback to gallery-dl if Cobalt fails for /p/
+        res = download_instagram_post_gallery_dl(url, download_dir, cookies_path)
+        _cleanup_temp_cookie(cookies_path)
+        return res
     
-    # Method 1: Desktop user-agent
+    # Standard download chain (yt-dlp -> Fallbacks)
+    last_error = "Unknown error"
+    
+    # Method 1: yt-dlp Desktop
     ydl_opts = get_yt_dlp_options(download_dir, cookies_path)
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl: # type: ignore[arg-type]
             info = ydl.extract_info(target_url, download=True)
             if info:
-                tweet_text = info.get('description', '')[:4000] if platform == 'twitter' else None  # type: ignore[index]
+                tweet_text = info.get('description', '')[:4000] if platform == 'twitter' else None # type: ignore[index]
                 _cleanup_temp_cookie(cookies_path)
-                return process_info_result(info, url, download_dir, platform, tweet_text)  # type: ignore[arg-type]
-    except Exception:
-        pass  # Try mobile
+                return process_info_result(info, url, download_dir, platform, tweet_text) # type: ignore[arg-type]
+    except Exception as e:
+        last_error = str(e)
+        logger.warning(f"yt-dlp desktop failed: {last_error}")
     
-    # Method 2: Mobile user-agent
+    # Method 2: yt-dlp Mobile
     ydl_opts = get_mobile_headers_options(download_dir, cookies_path)
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl: # type: ignore[arg-type]
             info = ydl.extract_info(target_url, download=True)
             if info:
-                tweet_text = info.get('description', '')[:4000] if platform == 'twitter' else None  # type: ignore[index]
+                tweet_text = info.get('description', '')[:4000] if platform == 'twitter' else None # type: ignore[index]
                 _cleanup_temp_cookie(cookies_path)
-                return process_info_result(info, url, download_dir, platform, tweet_text)  # type: ignore[arg-type]
+                return process_info_result(info, url, download_dir, platform, tweet_text) # type: ignore[arg-type]
     except Exception as e:
-        if platform == 'twitter':
-            try:
-                import subprocess
-                import json
-                import urllib.parse
-                parsed = urllib.parse.urlparse(url)
-                api_url = f"https://api.vxtwitter.com{parsed.path}"
-                res = subprocess.run(['curl', '-s', api_url], capture_output=True, text=True, timeout=10)
-                if res.returncode == 0:
-                    data = json.loads(res.stdout)
-                    text = data.get('text')
-                    if text:
-                        return MediaResult(
-                            post_url=url,
-                            platform=platform,
-                            media_type='text',
-                            tweet_text=text[:4000]
-                        )
-            except Exception:
-                pass
-        _cleanup_temp_cookie(cookies_path)
-        error_msg = str(e)
+        last_error = str(e)
+        logger.warning(f"yt-dlp mobile failed: {last_error}")
+
+    # Method 3: Instagram-specific fallbacks (Cobalt -> gallery-dl)
+    if platform == 'instagram':
+        logger.info("yt-dlp failed for Instagram, trying Cobalt fallback...")
+        res = download_instagram_post_cobalt(url, download_dir)
+        if not res.error:
+            _cleanup_temp_cookie(cookies_path)
+            return res
         
-        if 'unable to extract video url' in error_msg.lower():
-            return MediaResult(
-                post_url=url,
-                platform=platform,
-                error=(
-                    "yt-dlp could not extract the video URL.\n\n"
-                    "Fix: `pip install -U yt-dlp` then restart bot.\n\n"
-                    "For Instagram, try full cookies file (INSTAGRAM_COOKIES_FILE)."
-                )
-            )
+        logger.info("Cobalt failed, trying gallery-dl fallback...")
+        res = download_instagram_post_gallery_dl(url, download_dir, cookies_path)
+        if not res.error:
+            _cleanup_temp_cookie(cookies_path)
+            return res
         
-        auth_needed = (
-            'login' in error_msg.lower() or 'sign in' in error_msg.lower() or 
-            'rate-limit' in error_msg.lower() or 'not available' in error_msg.lower()
-        )
-        if auth_needed and platform == 'instagram':
-            return MediaResult(
-                post_url=url,
-                platform=platform,
-                error=(
-                    "Instagram requires authentication.\n\n"
-                    "1. instagram.com → F12 → Application → Cookies → instagram.com → sessionid value\n"
-                    "2. .env: INSTAGRAM_SESSION_ID=<value>\n"
-                    "3. Restart bot"
-                )
-            )
-        
+        last_error = res.error or last_error
+
+    # Method 4: Twitter-specific fallback (vxtwitter)
+    if platform == 'twitter':
+        try:
+            import urllib.parse
+            parsed = urllib.parse.urlparse(url)
+            api_url = f"https://api.vxtwitter.com{parsed.path}"
+            res_vx = subprocess.run(['curl', '-s', api_url], capture_output=True, text=True, timeout=10)
+            if res_vx.returncode == 0:
+                data = json.loads(res_vx.stdout)
+                text = data.get('text')
+                if text:
+                    _cleanup_temp_cookie(cookies_path)
+                    return MediaResult(
+                        post_url=url,
+                        platform=platform,
+                        media_type='text',
+                        tweet_text=text[:4000]
+                    )
+        except Exception as e:
+            logger.debug(f"vxtwitter fallback failed: {e}")
+
+    # Final error handling
+    _cleanup_temp_cookie(cookies_path)
+    
+    if 'unable to extract video url' in last_error.lower():
         return MediaResult(
             post_url=url,
             platform=platform,
-            error=f"Download failed: {error_msg}"
+            error=(
+                "Could not extract video. Platform might be blocking us.\n\n"
+                "Fixes:\n"
+                "1. `pip install -U yt-dlp`\n"
+                "2. Provide fresh cookies in `INSTAGRAM_COOKIES_FILE`."
+            )
         )
     
-    _cleanup_temp_cookie(cookies_path)
+    auth_needed = (
+        'login' in last_error.lower() or 'sign in' in last_error.lower() or 
+        'rate-limit' in last_error.lower() or 'not available' in last_error.lower()
+    )
+    if auth_needed and platform == 'instagram':
+        return MediaResult(
+            post_url=url,
+            platform=platform,
+            error=(
+                "Instagram requires authentication.\n"
+                "Check your INSTAGRAM_SESSION_ID or provide a full cookie file."
+            )
+        )
+    
+    return MediaResult(
+        post_url=url,
+        platform=platform,
+        error=f"Download failed after trying all methods. Error: {last_error}"
+    )
     return MediaResult(
         post_url=url,
         platform=platform,
