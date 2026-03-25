@@ -10,13 +10,15 @@ import subprocess
 import json
 import logging
 import yt_dlp  # type: ignore[import-untyped]
+import sys
+import shutil
+from typing import Optional
 
 # Fix for PermissionError on Windows Python 3.12 SSL keylogging
 if 'SSLKEYLOGFILE' not in os.environ:
     os.environ['SSLKEYLOGFILE'] = os.path.join(tempfile.gettempdir(), 'yt_dlp_ssl.log')
 
 from dataclasses import dataclass
-from typing import Optional
 import time
 from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID
 
@@ -319,8 +321,23 @@ def download_instagram_post_gallery_dl(url: str, download_dir: str, cookies_path
     logger = logging.getLogger(__name__)
     logger.info(f"Attempting gallery-dl for: {url}")
     
+    # Cross-platform detection of gallery-dl binary
+    gallery_dl_bin = shutil.which("gallery-dl")
+    if not gallery_dl_bin:
+        # Fallback: look in the same directory as the current python executable
+        python_dir = os.path.dirname(sys.executable)
+        for name in ["gallery-dl", "gallery-dl.exe"]:
+            p = os.path.join(python_dir, name)
+            if os.path.exists(p):
+                gallery_dl_bin = p
+                break
+    
+    if not gallery_dl_bin:
+        gallery_dl_bin = "gallery-dl" # Last resort, attempt to use system PATH
+        
+    # gallery-dl -d download_dir --cookies cookies_path url
     # Note: --write-metadata creates .json files with same name as media
-    cmd = [os.path.join(".venv", "Scripts", "gallery-dl.exe"), "--dest", download_dir, "--write-metadata"]
+    cmd = [gallery_dl_bin, "--dest", download_dir, "--write-metadata"]
     if cookies_path:
         cmd.extend(["--cookies", cookies_path])
     cmd.append(url)
