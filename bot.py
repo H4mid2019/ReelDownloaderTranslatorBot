@@ -52,6 +52,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "and transcribe/translate them.\n\n"
         "📝 Commands:\n"
         "/d <video_url> - Download and process\n"
+        "/chatid - Get the current chat ID\n"
         "/help - Show help\n\n"
         "Supported:\n"
         "• Instagram: /reel/, /reels/, /tv/ (no /p/ posts)\n"
@@ -77,6 +78,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Other: video + transcript + English translation\n\n"
         "⚠️ Public videos only\n\n"
         + DISCLAIMER
+    )
+
+
+async def chatid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /chatid command to easily get the current group or user chat ID."""
+    if not update.message:
+        return
+    chat = update.message.chat
+    chat_type = chat.type
+    chat_title = chat.title or "Private Chat"
+    await update.message.reply_text(
+        f"📝 **Chat Information**\n"
+        f"• **ID:** `{chat.id}`\n"
+        f"• **Type:** {chat_type}\n"
+        f"• **Title:** {chat_title}\n\n"
+        f"You can copy the ID above and paste it into your configuration."
     )
 
 
@@ -304,7 +321,8 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
     if not update.message or not update.message.from_user:
         return
     user = update.message.from_user
-    logger.info(f"User {user.first_name} ({user.id}) triggered processing for {url}")
+    chat = update.message.chat
+    logger.info(f"User {user.first_name} ({user.id}) in Chat {chat.title or chat.type} ({chat.id}) triggered processing for {url}")
 
     # Detect platform
     platform = detect_platform(url)
@@ -645,6 +663,7 @@ def main():
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("chatid", chatid_command))
     application.add_handler(CommandHandler("d", download_command))
 
     application.add_handler(
