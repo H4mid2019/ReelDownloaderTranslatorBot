@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+import asyncio
 from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     Application,
@@ -20,6 +21,7 @@ from config import TELEGRAM_BOT_TOKEN, MAX_VIDEO_SIZE_MB, MAX_VIDEO_SIZE_BYTES
 from downloader import download_video, detect_platform
 from transcriber import Transcriber
 from translator import Translator
+from truth_monitor import monitor_loop
 from typing import Optional
 
 # Enable logging
@@ -40,6 +42,11 @@ DISCLAIMER = """
 
 # Chunk size for splitting large videos (45MB to stay under 50MB Telegram limit)
 VIDEO_CHUNK_SIZE_BYTES = 45 * 1024 * 1024
+
+
+async def post_init(application: Application):
+    """Start background tasks after bot initialization."""
+    asyncio.create_task(monitor_loop(application))
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -659,7 +666,7 @@ def main():
     _check_yt_dlp_version()
     logger.info("Starting Instagram Downloader Bot...")
 
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
