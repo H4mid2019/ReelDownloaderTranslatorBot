@@ -7,7 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
-from telegram import Update
+from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -342,6 +342,70 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                     translated_caption = t_res['english_translation']
             except Exception as e:
                 logger.warning(f"Text translation failed: {e}")
+
+        # ── Handle GALLERY (Carousel) ─────────────────────────────────────────
+        if result.media_type == 'gallery' or len(result.file_paths) > 1:
+            if status_msg:
+                await status_msg.edit_text("📤 Sending gallery (carousel)...")
+            
+            footer = f"\n\n🖼️ Gallery ({platform})\n📏 Total Size: {result.file_size_bytes / (1024*1024):.2f} MB"
+            if result.caption and translated_caption:
+                sep = "\n\n🌐 **Translation:**\n"
+                max_len = 1024 - len(footer) - len(sep)
+                half = max_len // 2
+                trunc_orig = result.caption[:half-3] + "..." if len(result.caption) > half else result.caption
+                trunc_trans = translated_caption[:max_len-len(trunc_orig)-3] + "..." if len(translated_caption) > (max_len-len(trunc_orig)) else translated_caption
+                caption = f"{trunc_orig}{sep}{trunc_trans}{footer}"
+            elif result.caption:
+                caption = f"{result.caption[:1024-len(footer)-3]}{footer}"
+            else:
+                caption = footer.strip()
+                
+            from typing import List, Union
+            media_groups: List[List[Union[InputMediaPhoto, InputMediaVideo]]] = []
+            current_group: List[Union[InputMediaPhoto, InputMediaVideo]] = []
+            open_files = [] # Keep track to close them later
+            
+            try:
+                for idx, file_path in enumerate(result.file_paths):
+                    ext = os.path.splitext(file_path)[1].lower()
+                    is_video = ext in ('.mp4', '.mkv', '.mov')
+                    
+                    item_caption = caption if idx == 0 else ""
+                    
+                    f = open(file_path, 'rb')
+                    open_files.append(f)
+                    
+                    if is_video:
+                        current_group.append(InputMediaVideo(media=f, caption=item_caption))
+                    else:
+                        current_group.append(InputMediaPhoto(media=f, caption=item_caption))
+                        
+                    if len(current_group) == 10:
+                        media_groups.append(current_group)
+                        current_group = []
+                
+                if current_group:
+                    media_groups.append(current_group)
+                    
+                if update.message:
+                    for i, group in enumerate(media_groups):
+                        if i > 0 and status_msg:
+                            await status_msg.edit_text(f"📤 Sending gallery part {i+1}/{len(media_groups)}...")
+                        await update.message.reply_media_group(media=group)
+                        
+                if status_msg:
+                    await status_msg.edit_text("✅ Gallery sent successfully!")
+            except Exception as e:
+                logger.error(f"Failed to send media group: {e}", exc_info=True)
+                if status_msg:
+                    await status_msg.edit_text(f"⚠️ Failed to send gallery: {e}")
+            finally:
+                for f in open_files:
+                    f.close()
+                for fp in result.file_paths:
+                    cleanup_file(fp)
+            return
 
         # ── Handle PHOTO ───────────────────────────────────────────────────────
         if result.media_type == 'photo':

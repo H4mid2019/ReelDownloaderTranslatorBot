@@ -12,13 +12,13 @@ import logging
 import yt_dlp  # type: ignore[import-untyped]
 import sys
 import shutil
-from typing import Optional
+from typing import Optional, List
 
 # Fix for PermissionError on Windows Python 3.12 SSL keylogging
 if 'SSLKEYLOGFILE' not in os.environ:
     os.environ['SSLKEYLOGFILE'] = os.path.join(tempfile.gettempdir(), 'yt_dlp_ssl.log')
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import time
 from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID
 
@@ -29,6 +29,7 @@ class MediaResult:
     post_url: str
     media_type: str = 'unknown'
     file_path: str = ''
+    file_paths: List[str] = field(default_factory=list)
     file_size_bytes: int = 0
     duration_seconds: Optional[float] = None
     caption: Optional[str] = None
@@ -182,27 +183,28 @@ def process_info_result(info: dict, original_url: str, download_dir: str, platfo
     # Assume video (no image support)
     media_type = 'video'
     
-    # Find the downloaded file
-    file_path = ''
+    # Find downloaded files
+    file_paths = []
     file_size = 0
     
     if os.path.exists(download_dir):
         for f in os.listdir(download_dir):
             potential_path = os.path.join(download_dir, f)
-            if os.path.isfile(potential_path):
-                file_path = potential_path
-                file_size = os.path.getsize(potential_path)
-                break
+            if os.path.isfile(potential_path) and not f.endswith('.json'):
+                file_paths.append(potential_path)
+                file_size += os.path.getsize(potential_path)
+    
+    # Sort files by name to ensure consistent ordering if downloading carousels
+    file_paths.sort()
 
     import logging
     logger = logging.getLogger(__name__)
-    logger.info(f"Downloaded {platform}: {os.path.basename(file_path) if file_path else 'NO_FILE'}, "
-                f"size={file_size/(1024*1024):.2f}MB, "
+    logger.info(f"Downloaded {platform}: {len(file_paths)} files, "
+                f"total_size={file_size/(1024*1024):.2f}MB, "
                 f"duration={info.get('duration', 'N/A')}s, "
-                f"height={info.get('height', 'N/A')}p, "
                 f"format_id={info.get('format_id', 'N/A')}")
     
-    if not file_path:
+    if not file_paths:
         if platform == 'twitter' and tweet_text:
             return MediaResult(
                 post_url=original_url,
@@ -224,7 +226,8 @@ def process_info_result(info: dict, original_url: str, download_dir: str, platfo
         post_url=original_url,
         platform=platform,
         media_type=media_type,
-        file_path=file_path,
+        file_path=file_paths[0] if file_paths else '',
+        file_paths=file_paths,
         file_size_bytes=file_size,
         duration_seconds=info.get('duration'),
         caption=caption,
@@ -276,37 +279,42 @@ def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
             if data.get('status') == 'error':
                 continue
 
-            media_url = ""
-            if data.get('status') in ['stream', 'redirect']:
-                media_url = data.get('url')
-            elif data.get('status') == 'picker':
-                picker_items = data.get('picker', [])
-                if picker_items:
-                    media_url = picker_items[0].get('url')
-
-            if not media_url:
+            picker_items = data.get('picker', [])
+            file_paths = []
+            file_size_bytes = 0
+            
+            # If picker exists, it's a carousel. Otherwise single media.
+            if data.get('status') in ['stream', 'redirect'] and data.get('url'):
+                urls_to_download = [data.get('url')]
+            elif data.get('status') == 'picker' and picker_items:
+                urls_to_download = [item.get('url') for item in picker_items if item.get('url')]
+            else:
                 continue
+                
+            for idx, media_url in enumerate(urls_to_download):
+                ext = '.mp4' if '.mp4' in media_url else '.jpg'
+                file_path = os.path.join(download_dir, f"ig_post_{int(time.time())}_{idx}{ext}")
 
-            ext = '.mp4' if '.mp4' in media_url else '.jpg'
-            file_path = os.path.join(download_dir, f"ig_post_{int(time.time())}{ext}")
-
-            # Download the actual media
-            res_dl = subprocess.run(['curl.exe', '-s', '-L', '-o', file_path, media_url], timeout=60)
-            if res_dl.returncode != 0 or not os.path.exists(file_path):
+                # Download the actual media
+                res_dl = subprocess.run(['curl.exe', '-s', '-L', '-o', file_path, media_url], timeout=60)
+                if res_dl.returncode == 0 and os.path.exists(file_path):
+                    file_paths.append(file_path)
+                    file_size_bytes += os.path.getsize(file_path)
+                    
+            if not file_paths:
                 continue
 
             caption = data.get('text') or data.get('caption')
-            if not caption and data.get('status') == 'picker':
-                picker_items = data.get('picker', [])
-                if picker_items:
-                    caption = picker_items[0].get('text') or picker_items[0].get('caption')
+            if not caption and data.get('status') == 'picker' and picker_items:
+                caption = picker_items[0].get('text') or picker_items[0].get('caption')
 
             return MediaResult(
                 post_url=url,
                 platform='instagram',
-                media_type='video' if ext == '.mp4' else 'photo',
-                file_path=file_path,
-                file_size_bytes=os.path.getsize(file_path),
+                media_type='gallery' if len(file_paths) > 1 else ('video' if file_paths[0].endswith('.mp4') else 'photo'),
+                file_path=file_paths[0],
+                file_paths=file_paths,
+                file_size_bytes=file_size_bytes,
                 caption=caption,
                 error=None
             )
@@ -363,21 +371,31 @@ def download_instagram_post_gallery_dl(url: str, download_dir: str, cookies_path
                     except Exception:
                         pass
 
+        file_paths = []
+        file_size_bytes = 0
+        has_video = False
+        
         for root, _, files in os.walk(download_dir):
             for file in files:
                 if file.lower().endswith(('.mp4', '.mkv', '.mov', '.jpg', '.jpeg', '.png', '.webp')):
                     file_path = os.path.join(root, file)
-                    file_size = os.path.getsize(file_path)
-                    ext = os.path.splitext(file)[1].lower()
-                    return MediaResult(
-                        post_url=url,
-                        platform='instagram',
-                        media_type='video' if ext in ('.mp4', '.mkv', '.mov') else 'photo',
-                        file_path=file_path,
-                        file_size_bytes=file_size,
-                        caption=captured_caption,
-                        error=None
-                    )
+                    file_paths.append(file_path)
+                    file_size_bytes += os.path.getsize(file_path)
+                    if file.lower().endswith(('.mp4', '.mkv', '.mov')):
+                        has_video = True
+                        
+        if file_paths:
+            file_paths.sort()
+            return MediaResult(
+                post_url=url,
+                platform='instagram',
+                media_type='gallery' if len(file_paths) > 1 else ('video' if has_video else 'photo'),
+                file_path=file_paths[0],
+                file_paths=file_paths,
+                file_size_bytes=file_size_bytes,
+                caption=captured_caption,
+                error=None
+            )
     except Exception as e:
         logger.error(f"gallery-dl failed: {e}")
         
