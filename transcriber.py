@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import groq
 from config import GROQ_API_KEY, TRANSCRIPTION_MODEL
+from typing import Optional
 
 
 class Transcriber:
@@ -76,7 +77,7 @@ class Transcriber:
         except FileNotFoundError:
             raise Exception("ffmpeg not found. Please install ffmpeg: sudo apt install ffmpeg")
     
-    def transcribe_audio(self, audio_file_path: str, force_language: str = None) -> dict:
+    def transcribe_audio(self, audio_file_path: str, force_language: Optional[str] = None) -> dict:
         """
         Transcribe an audio/video file using Groq Whisper.
         
@@ -211,10 +212,10 @@ class Transcriber:
                 try:
                     os.remove(temp_audio_path)
                     os.rmdir(os.path.dirname(temp_audio_path))
-                except:
+                except Exception:
                     pass
     
-    def transcribe_video(self, video_file_path: str, force_language: str = None) -> dict:
+    def transcribe_video(self, video_file_path: str, force_language: Optional[str] = None) -> dict:
         """
         Convenience method for transcribing video files.
         Extracts audio first if video is too large.
@@ -222,7 +223,7 @@ class Transcriber:
         return self.transcribe_audio(video_file_path, force_language)
 
 
-def transcribe_file(file_path: str, force_language: str = None) -> dict:
+def transcribe_file(file_path: str, force_language: Optional[str] = None) -> dict:
     """Quick helper function for transcribing a file."""
     transcriber = Transcriber()
     return transcriber.transcribe_video(file_path, force_language)

@@ -5,6 +5,8 @@ Handles translation of any non-English language to English.
 import groq
 from config import GROQ_API_KEY, TRANSLATION_MODEL
 
+from typing import Optional
+
 
 class Translator:
     """Handles language detection and translation using Groq LLM."""
@@ -170,7 +172,7 @@ Provide ONLY the English translation, nothing else."""
                 'error': f"Translation error: {str(e)}"
             }
     
-    def process_transcript(self, transcript: str, hint_language: str = None) -> dict:
+    def process_transcript(self, transcript: str, hint_language: Optional[str] = None) -> dict:
         """
         Process a transcript: detect language and translate to English if needed.
         
@@ -212,7 +214,7 @@ Provide ONLY the English translation, nothing else."""
         if not result['is_english']:
             translation_result = self.translate_to_english(
                 transcript, 
-                result['detected_language_name']
+                str(result['detected_language_name'] or "unknown")
             )
             result['english_translation'] = translation_result['translation']
             if translation_result['error']:
@@ -224,7 +226,7 @@ Provide ONLY the English translation, nothing else."""
         return result
 
 
-def detect_and_translate(transcript: str, hint_language: str = None) -> dict:
+def detect_and_translate(transcript: str, hint_language: Optional[str] = None) -> dict:
     """
     Quick helper function for detecting language and translating.
     

@@ -6,7 +6,7 @@ Requires Instagram session cookies for posts (images/carousels).
 import os
 import re
 import tempfile
-import yt_dlp
+import yt_dlp  # type: ignore[import-untyped]
 
 # Fix for PermissionError on Windows Python 3.12 SSL keylogging
 if 'SSLKEYLOGFILE' not in os.environ:
@@ -237,9 +237,10 @@ def _cleanup_temp_cookie(path: Optional[str]):
 
 
 def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
-    import subprocess, json, urllib.parse, time
-    import logging
-    logger = logging.getLogger(__name__)
+    import subprocess
+    import json
+    import time
+    # Removed unused logging and logger to satisfy Ruff
 
     # List of public Cobalt mirrors to try
     mirrors = [
@@ -332,28 +333,29 @@ def download_video(url: str) -> MediaResult:
     # Method 1: Desktop user-agent
     ydl_opts = get_yt_dlp_options(download_dir, cookies_path)
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
             info = ydl.extract_info(target_url, download=True)
             if info:
-                tweet_text = info.get('description', '')[:4000] if platform == 'twitter' else None
+                tweet_text = info.get('description', '')[:4000] if platform == 'twitter' else None  # type: ignore[index]
                 _cleanup_temp_cookie(cookies_path)
-                return process_info_result(info, url, download_dir, platform, tweet_text)
+                return process_info_result(info, url, download_dir, platform, tweet_text)  # type: ignore[arg-type]
     except Exception:
         pass  # Try mobile
     
     # Method 2: Mobile user-agent
     ydl_opts = get_mobile_headers_options(download_dir, cookies_path)
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
             info = ydl.extract_info(target_url, download=True)
             if info:
-                tweet_text = info.get('description', '')[:4000] if platform == 'twitter' else None
+                tweet_text = info.get('description', '')[:4000] if platform == 'twitter' else None  # type: ignore[index]
                 _cleanup_temp_cookie(cookies_path)
-                return process_info_result(info, url, download_dir, platform, tweet_text)
+                return process_info_result(info, url, download_dir, platform, tweet_text)  # type: ignore[arg-type]
     except Exception as e:
         if platform == 'twitter':
             try:
-                import subprocess, json
+                import subprocess
+                import json
                 import urllib.parse
                 parsed = urllib.parse.urlparse(url)
                 api_url = f"https://api.vxtwitter.com{parsed.path}"

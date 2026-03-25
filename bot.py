@@ -44,6 +44,8 @@ VIDEO_CHUNK_SIZE_BYTES = 45 * 1024 * 1024
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
+    if not update.message:
+        return
     await update.message.reply_text(
         "👋 Welcome to Video Downloader Bot!\n\n"
         "I can download videos from Instagram Reels/TV, X/Twitter "
@@ -60,6 +62,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command."""
+    if not update.message:
+        return
     await update.message.reply_text(
         "📖 How to use:\n\n"
         "1️⃣ `/d <video_url>`\n\n"
@@ -196,6 +200,8 @@ async def send_video_or_chunks(
         if tweet_text:
             caption = tweet_text[:850] + '\n\n' + caption
         caption += f"\n🔊 Language: {lang_name}"
+        if not update.message:
+            return False
         await update.message.reply_video(
             video=open(video_path, 'rb'),
             caption=caption
@@ -221,6 +227,8 @@ async def send_video_or_chunks(
             caption = f"🎬 Video ({platform}) — Part {idx}/{total_parts}\n📏 Part: {chunk_size_mb:.2f} MB\n🔊 Language: {lang_name}"
             if tweet_text:
                 caption = tweet_text[:850] + '\n\n' + caption
+            if not update.message:
+                continue
             await update.message.reply_video(
                 video=open(chunk_path, 'rb'),
                 caption=caption
@@ -236,6 +244,8 @@ async def send_video_or_chunks(
 
 async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main command handler for /download."""
+    if not update.message:
+        return
     if not context.args:
         await update.message.reply_text(
             "❌ Please provide a URL.\n"
@@ -270,6 +280,8 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
     Process a detected or provided URL.
     Downloads Instagram post or Tweet, sends video first, then transcribes and translates.
     """
+    if not update.message or not update.message.from_user:
+        return
     user = update.message.from_user
     logger.info(f"User {user.first_name} ({user.id}) triggered processing for {url}")
 
@@ -305,10 +317,11 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             
             # Send photo safely
             try:
-                await update.message.reply_photo(
-                    photo=open(result.file_path, 'rb'),
-                    caption=caption
-                )
+                if update.message:
+                    await update.message.reply_photo(
+                        photo=open(result.file_path, 'rb'),
+                        caption=caption
+                    )
                 await status_msg.edit_text("✅ Photo sent successfully!")
             except Exception as e:
                 await status_msg.edit_text(f"⚠️ Failed to send photo: {e}")
@@ -389,10 +402,11 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                             "Persian language doesn't need transcription or translation.\n\n"
                         )
                     except Exception:
-                        await update.message.reply_text(
-                            f"🔍 **Detected Language:** {detected_lang_name} (Persian)\n\n"
-                            "No transcription/translation needed."
-                        )
+                        if update.message:
+                            await update.message.reply_text(
+                                f"🔍 **Detected Language:** {detected_lang_name} (Persian)\n\n"
+                                "No transcription/translation needed."
+                            )
                 cleanup_file(result.file_path)
                 return
 
@@ -403,7 +417,8 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                     try:
                         await status_msg.edit_text("⚠️ No speech detected in this video.")
                     except Exception:
-                        await update.message.reply_text("⚠️ No speech detected in this video.")
+                        if update.message:
+                            await update.message.reply_text("⚠️ No speech detected in this video.")
                 cleanup_file(result.file_path)
                 return
 
@@ -443,26 +458,30 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                             "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
                         )
                     except Exception:
-                        await update.message.reply_text(
-                            f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
-                            "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
-                        )
+                        if update.message:
+                            await update.message.reply_text(
+                                f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
+                                "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
+                            )
 
                 remaining = processed['original_transcript'][3500:]
                 if remaining:
                     for i in range(0, len(remaining), 4000):
-                        await update.message.reply_text(remaining[i:i+4000])
+                        if update.message:
+                            await update.message.reply_text(remaining[i:i+4000])
 
                 if not processed['is_english'] and processed.get('english_translation'):
                     trans_text = "🌐 **English Translation:**\n" + processed['english_translation']
                     for i in range(0, len(trans_text), 4000):
-                        await update.message.reply_text(trans_text[i:i+4000])
+                        if update.message:
+                            await update.message.reply_text(trans_text[i:i+4000])
             else:
                 if status_msg:
                     try:
                         await status_msg.edit_text(response_text)
                     except Exception:
-                        await update.message.reply_text(response_text)
+                        if update.message:
+                            await update.message.reply_text(response_text)
 
             cleanup_file(result.file_path)
             return
@@ -482,7 +501,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
 def _check_yt_dlp_version():
     """Log the installed yt-dlp version as a sanity check at startup."""
     try:
-        import yt_dlp
+        import yt_dlp  # type: ignore[import-untyped]
         version = getattr(yt_dlp, '__version__', 'unknown')
         logger.info(f"yt-dlp version: {version}  (run 'pip install -U yt-dlp' to update)")
     except Exception:
