@@ -184,15 +184,15 @@ def process_info_result(info: dict, original_url: str, download_dir: str, platfo
     media_type = 'video'
     
     # Find downloaded files
-    file_paths = []
-    file_size = 0
+    file_paths: List[str] = []
+    file_size: int = 0
     
     if os.path.exists(download_dir):
         for f in os.listdir(download_dir):
             potential_path = os.path.join(download_dir, f)
             if os.path.isfile(potential_path) and not f.endswith('.json'):
                 file_paths.append(potential_path)
-                file_size += os.path.getsize(potential_path)
+                file_size += os.path.getsize(potential_path)  # type: ignore
     
     # Sort files by name to ensure consistent ordering if downloading carousels
     file_paths.sort()
@@ -299,7 +299,7 @@ def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
                 res_dl = subprocess.run(['curl.exe', '-s', '-L', '-o', file_path, media_url], timeout=60)
                 if res_dl.returncode == 0 and os.path.exists(file_path):
                     file_paths.append(file_path)
-                    file_size_bytes += os.path.getsize(file_path)
+                    file_size_bytes += os.path.getsize(file_path)  # type: ignore
                     
             if not file_paths:
                 continue
@@ -380,7 +380,7 @@ def download_instagram_post_gallery_dl(url: str, download_dir: str, cookies_path
                 if file.lower().endswith(('.mp4', '.mkv', '.mov', '.jpg', '.jpeg', '.png', '.webp')):
                     file_path = os.path.join(root, file)
                     file_paths.append(file_path)
-                    file_size_bytes += os.path.getsize(file_path)
+                    file_size_bytes += os.path.getsize(file_path)  # type: ignore
                     if file.lower().endswith(('.mp4', '.mkv', '.mov')):
                         has_video = True
                         
