@@ -1,55 +1,63 @@
-# 📸 Instagram Downloader Bot
+# 📸 Multipurpose Downloader & Translator Bot
 
-Telegram bot that downloads Instagram posts and transcribes videos with automatic translation to English.
+A powerful Telegram bot that downloads media from **Instagram** and **X/Twitter**, transcribes videos, and translates content automatically. It also includes a specialized monitor for **Truth Social** alerts.
 
-## Quick Setup
+## 🚀 Quick Setup
 
 ```bash
 pip install -r requirements.txt
-sudo apt install ffmpeg  # Required for audio extraction
+# Ensure ffmpeg is installed on your system
+# Linux: sudo apt install ffmpeg
+# Windows: Download from gyan.dev and add to PATH
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env with your API keys (Telegram, Groq, etc.)
 python bot.py
 ```
 
-## Commands
+## 🎮 How to Use
 
-- `/start` - Start bot
-- `/help` - Help info
-- `/d <url>` - Download Instagram post
+Simply send or forward any supported link to the bot. It will automatically detect the platform and process the content.
 
-## Features
+- **Automated:** No commands needed! Just paste a link.
+- **Manual:** Use `/d <url>` if auto-detection doesn't trigger.
 
-- Download images & videos from public Instagram posts
-- Auto-transcribe videos (Groq Whisper)
-- Auto-detect video language
-- **Translate all non-English videos to English** (except Persian)
-- Works in private chat and groups
-- Videos >50MB: split into parts and sent automatically
-- Large videos: audio is compressed automatically
+## ✨ Features
 
-## API Keys Needed
+- **Instagram Downloader:**
+    - Supports Reels, TV, and **Posts (/p/)**.
+    - Downloads single images, videos, and **Carousels (Galleries)**.
+    - Automatically attaches the original caption and its English translation.
+- **X/Twitter Downloader:**
+    - Downloads status videos.
+    - Supports text-only posts with automatic translation.
+- **AI Transcription & Translation:**
+    - Uses **Groq Whisper** for lightning-fast transcription.
+    - Auto-detects video language.
+    - **Translates all non-English videos to English** (Except Persian).
+- **Truth Social Monitor:**
+    - Background task that polls Donald Trump's Truths via RSS.
+    - Uses AI (Llama 3) to filter for posts related to **Iran**.
+    - Sends instant alerts to a configured Telegram chat.
+- **Large Video Handling:**
+    - Videos >50MB are automatically split into parts to stay within Telegram limits.
+    - Automatic remuxing for maximum compatibility with Telegram's video player.
 
-- **Telegram**: [@BotFather](https://t.me/BotFather)
-- **Groq**: [console.groq.com](https://console.groq.com)
+## 🔑 API Keys & Config
 
-## Instagram Authentication
+- **Telegram Bot Token**: Get from [@BotFather](https://t.me/BotFather)
+- **Groq API Key**: Get from [console.groq.com](https://console.groq.com)
+- **Truth Social Configuration**:
+    - `TRUTH_ALERT_CHAT_ID`: The ID of the group/user where alerts should be sent.
+    - `TRUTH_RSS_URL`: The RSS feed to monitor (default provided).
 
-**Image posts/carousels require Instagram cookies.**
+## 🍪 Instagram Authentication
+
+**Image posts/carousels require cookies to bypass some restrictions.**
 
 1. Login to Instagram in Chrome
 2. Install "EditThisCookie" extension
 3. Export cookies in Netscape format
-4. Save as `instagram_cookies.txt` in bot directory
+4. Save as `instagram_cookies.txt` in the bot directory
 5. Set `INSTAGRAM_COOKIES_FILE=instagram_cookies.txt` in `.env`
-
-**Reels and videos** work without authentication.
-
-## Model Configuration
-
-```env
-TRANSCRIPTION_MODEL=whisper-large-v3
-TRANSLATION_MODEL="meta-llama/llama-4-scout-17b-16e-instruct"
-```
 
 ⚠️ **OPEN-SOURCE** - Non-commercial use only. See LICENSE.

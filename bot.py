@@ -55,15 +55,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "👋 Welcome to Video Downloader Bot!\n\n"
-        "I can download videos from Instagram Reels/TV, X/Twitter "
-        "and transcribe/translate them.\n\n"
-        "📝 Commands:\n"
-        "/d <video_url> - Download and process\n"
+        "I can download media from **Instagram (Posts, Reels, TV)** and **X/Twitter (Videos)**.\n\n"
+        "🚀 **How to use:**\n"
+        "Just send or forward any supported link! I'll detect it and start processing automatically.\n\n"
+        "📁 **Features:**\n"
+        "• **Download:** Support for single posts, reels, and carousels (galleries).\n"
+        "• **Transcription:** Automatically transcribes speech from videos.\n"
+        "• **Translation:** Translates non-English/non-Persian speech to English.\n"
+        "• **Captions:** Instagram post captions are attached to the media with their translation.\n"
+        "• **Truth Monitor:** Background tracking of Trump's Truth Social for Iran-related posts.\n\n"
+        "📝 **Commands:**\n"
         "/chatid - Get the current chat ID\n"
-        "/help - Show help\n\n"
-        "Supported:\n"
-        "• Instagram: /reel/, /reels/, /tv/ (no /p/ posts)\n"
-        "• X/Twitter: x.com/username/status/ID\n\n"
+        "/help - Show detailed help\n"
+        "/d <url> - Manual download (if auto-detect fails)\n\n"
         + DISCLAIMER
     )
 
@@ -73,17 +77,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     await update.message.reply_text(
-        "📖 How to use:\n\n"
-        "1️⃣ `/d <video_url>`\n\n"
-        "✅ **Supported platforms:**\n"
-        "• Instagram Reels/TV (no /p/ posts)\n"
-        "• X/Twitter status videos\n\n"
-        "2️⃣ **Videos >50MB** auto-split\n\n"
-        "3️⃣ **Transcription/Translation:**\n"
-        "• Persian: video only\n"
-        "• English: video + transcript\n"
-        "• Other: video + transcript + English translation\n\n"
-        "⚠️ Public videos only\n\n"
+        "📖 **How to use:**\n\n"
+        "1️⃣ **Send a Link:** Simply paste an Instagram or X/Twitter link. I will detect it automatically.\n"
+        "2️⃣ **Wait for Download:** I'll download the media (Photo, Video, or Gallery).\n"
+        "3️⃣ **Transcription & Translation:**\n"
+        "   • **Persian:** No translation needed.\n"
+        "   • **English:** Transcript provided.\n"
+        "   • **Other Languages:** Transcript + English translation provided.\n\n"
+        "✅ **Supported Platforms:**\n"
+        "• **Instagram:** Reels, TV, and Posts (/p/ posts are now supported!)\n"
+        "• **X/Twitter:** Status videos and text-only posts.\n"
+        "• **Truth Social:** Automated monitoring for specific alerts.\n\n"
+        "💡 **Pro Tip:** Videos over 50MB are automatically split into smaller parts for Telegram compatibility.\n\n"
         + DISCLAIMER
     )
 
