@@ -46,7 +46,14 @@ VIDEO_CHUNK_SIZE_BYTES = 45 * 1024 * 1024
 
 async def post_init(application: Application):
     """Start background tasks after bot initialization."""
-    asyncio.create_task(monitor_loop(application))
+    task = asyncio.create_task(monitor_loop(application))
+    application.bot_data["truth_monitor_task"] = task
+
+async def post_stop(application: Application):
+    """Clean up background tasks before bot shutdown."""
+    task = application.bot_data.get("truth_monitor_task")
+    if task and not task.done():
+        task.cancel()
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -671,7 +678,7 @@ def main():
     _check_yt_dlp_version()
     logger.info("Starting Instagram Downloader Bot...")
 
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
