@@ -489,10 +489,48 @@ def download_video(url: str) -> MediaResult:
             import urllib.parse
             parsed = urllib.parse.urlparse(url)
             api_url = f"https://api.vxtwitter.com{parsed.path}"
-            res_vx = subprocess.run(['curl', '-s', api_url], capture_output=True, text=True, timeout=10)
+            res_vx = subprocess.run(['curl.exe', '-s', api_url], capture_output=True, text=True, timeout=10)
             if res_vx.returncode == 0:
                 data = json.loads(res_vx.stdout)
                 text = data.get('text')
+                media_extended = data.get('media_extended', [])
+                
+                if media_extended:
+                    file_paths = []
+                    file_size_bytes = 0
+                    has_video = False
+                    
+                    import time
+                    for idx, media in enumerate(media_extended):
+                        media_url = media.get('url')
+                        media_type_str = media.get('type')
+                        if not media_url:
+                            continue
+                        
+                        ext = '.mp4' if media_type_str in ('video', 'gif') else '.jpg'
+                        file_path = os.path.join(download_dir, f"tw_media_{int(time.time())}_{idx}{ext}")
+                        
+                        res_dl = subprocess.run(['curl.exe', '-s', '-L', '-o', file_path, media_url], timeout=60)
+                        if res_dl.returncode == 0 and os.path.exists(file_path):
+                            file_paths.append(file_path)
+                            file_size_bytes += os.path.getsize(file_path)
+                            if ext == '.mp4':
+                                has_video = True
+                                
+                    if file_paths:
+                        _cleanup_temp_cookie(cookies_path)
+                        return MediaResult(
+                            post_url=url,
+                            platform=platform,
+                            media_type='gallery' if len(file_paths) > 1 else ('video' if has_video else 'photo'),
+                            file_path=file_paths[0],
+                            file_paths=file_paths,
+                            file_size_bytes=file_size_bytes,
+                            caption=text,
+                            tweet_text=text,
+                            error=None
+                        )
+                
                 if text:
                     _cleanup_temp_cookie(cookies_path)
                     return MediaResult(
