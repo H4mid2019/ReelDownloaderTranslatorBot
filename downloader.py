@@ -265,8 +265,9 @@ def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
     for api_url in mirrors:
         try:
             payload = json.dumps({"url": url})
+            curl_cmd = 'curl.exe' if os.name == 'nt' else 'curl'
             res = subprocess.run([
-                'curl.exe', '-s', '-X', 'POST', api_url,
+                curl_cmd, '-s', '-X', 'POST', api_url,
                 '-H', 'Accept: application/json',
                 '-H', 'Content-Type: application/json',
                 '-d', payload
@@ -296,7 +297,7 @@ def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
                 file_path = os.path.join(download_dir, f"ig_post_{int(time.time())}_{idx}{ext}")
 
                 # Download the actual media
-                res_dl = subprocess.run(['curl.exe', '-s', '-L', '-o', file_path, media_url], timeout=60)
+                res_dl = subprocess.run([curl_cmd, '-s', '-L', '-o', file_path, media_url], timeout=60)
                 if res_dl.returncode == 0 and os.path.exists(file_path):
                     file_paths.append(file_path)
                     file_size_bytes += os.path.getsize(file_path)  # type: ignore
@@ -489,7 +490,8 @@ def download_video(url: str) -> MediaResult:
             import urllib.parse
             parsed = urllib.parse.urlparse(url)
             api_url = f"https://api.vxtwitter.com{parsed.path}"
-            res_vx = subprocess.run(['curl.exe', '-s', api_url], capture_output=True, text=True, timeout=10)
+            curl_cmd = 'curl.exe' if os.name == 'nt' else 'curl'
+            res_vx = subprocess.run([curl_cmd, '-s', api_url], capture_output=True, text=True, timeout=10)
             if res_vx.returncode == 0:
                 data = json.loads(res_vx.stdout)
                 text = data.get('text')
@@ -510,7 +512,7 @@ def download_video(url: str) -> MediaResult:
                         ext = '.mp4' if media_type_str in ('video', 'gif') else '.jpg'
                         file_path = os.path.join(download_dir, f"tw_media_{int(time.time())}_{idx}{ext}")
                         
-                        res_dl = subprocess.run(['curl.exe', '-s', '-L', '-o', file_path, media_url], timeout=60)
+                        res_dl = subprocess.run([curl_cmd, '-s', '-L', '-o', file_path, media_url], timeout=60)
                         if res_dl.returncode == 0 and os.path.exists(file_path):
                             file_paths.append(file_path)
                             file_size_bytes += os.path.getsize(file_path)
