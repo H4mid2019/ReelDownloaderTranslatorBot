@@ -251,7 +251,9 @@ async def send_video_or_chunks(
             return False
         await update.message.reply_video(
             video=open(video_path, 'rb'),
-            caption=caption
+            caption=caption,
+            read_timeout=120,
+            write_timeout=120
         )
         return True
     else:
@@ -288,7 +290,9 @@ async def send_video_or_chunks(
                 continue
             await update.message.reply_video(
                 video=open(chunk_path, 'rb'),
-                caption=caption
+                caption=caption,
+                read_timeout=120,
+                write_timeout=120
             )
 
         cleanup_chunks(chunk_paths, video_path)
@@ -429,7 +433,11 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                     for i, group in enumerate(media_groups):
                         if i > 0 and status_msg:
                             await status_msg.edit_text(f"📤 Sending gallery part {i+1}/{len(media_groups)}...")
-                        await update.message.reply_media_group(media=group)
+                        await update.message.reply_media_group(
+                            media=group,
+                            read_timeout=120,
+                            write_timeout=120
+                        )
                         
                 if status_msg:
                     await status_msg.edit_text("✅ Gallery sent successfully!")
@@ -467,7 +475,9 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 if update.message:
                     await update.message.reply_photo(
                         photo=open(result.file_path, 'rb'),
-                        caption=caption
+                        caption=caption,
+                        read_timeout=60,
+                        write_timeout=60
                     )
                 await status_msg.edit_text("✅ Photo sent successfully!")
             except Exception as e:
