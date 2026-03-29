@@ -432,7 +432,10 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 if update.message:
                     for i, group in enumerate(media_groups):
                         if i > 0 and status_msg:
-                            await status_msg.edit_text(f"📤 Sending gallery part {i+1}/{len(media_groups)}...")
+                            try:
+                                await status_msg.edit_text(f"📤 Sending gallery part {i+1}/{len(media_groups)}...")
+                            except Exception:
+                                pass
                         await update.message.reply_media_group(
                             media=group,
                             read_timeout=120,
@@ -440,11 +443,17 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                         )
                         
                 if status_msg:
-                    await status_msg.edit_text("✅ Gallery sent successfully!")
+                    try:
+                        await status_msg.edit_text("✅ Gallery sent successfully!")
+                    except Exception as e:
+                        logger.warning(f"Failed to edit success message: {e}")
             except Exception as e:
                 logger.error(f"Failed to send media group: {e}", exc_info=True)
                 if status_msg:
-                    await status_msg.edit_text(f"⚠️ Failed to send gallery: {e}")
+                    try:
+                        await status_msg.edit_text(f"⚠️ Failed to send gallery: {e}")
+                    except Exception:
+                        pass
             finally:
                 for f in open_files:
                     f.close()
@@ -479,9 +488,17 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                         read_timeout=60,
                         write_timeout=60
                     )
-                await status_msg.edit_text("✅ Photo sent successfully!")
+                if status_msg:
+                    try:
+                        await status_msg.edit_text("✅ Photo sent successfully!")
+                    except Exception:
+                        pass
             except Exception as e:
-                await status_msg.edit_text(f"⚠️ Failed to send photo: {e}")
+                if status_msg:
+                    try:
+                        await status_msg.edit_text(f"⚠️ Failed to send photo: {e}")
+                    except Exception:
+                        pass
             finally:
                 cleanup_file(result.file_path)
             return
@@ -688,7 +705,17 @@ def main():
     _check_yt_dlp_version()
     logger.info("Starting Instagram Downloader Bot...")
 
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
+    application = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .post_stop(post_stop)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
+        .build()
+    )
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
