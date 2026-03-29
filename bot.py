@@ -612,16 +612,14 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             if is_skipped:
                 if status_msg:
                     try:
-                        await status_msg.edit_text(
-                            f"🔍 **Detected Language:** {detected_lang_name}\n\n"
-                            "Persian language doesn't need transcription or translation.\n\n"
-                        )
+                        await status_msg.delete()
                     except Exception:
-                        if update.message:
-                            await update.message.reply_text(
-                                f"🔍 **Detected Language:** {detected_lang_name} (Persian)\n\n"
-                                "No transcription/translation needed."
-                            )
+                        pass
+                if update.message:
+                    await update.message.reply_text(
+                        f"🔍 **Detected Language:** {detected_lang_name} (Persian)\n\n"
+                        "No transcription/translation needed."
+                    )
                 cleanup_file(result.file_path)
                 return
 
@@ -630,15 +628,20 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             if not transcript or not transcript.strip():
                 if status_msg:
                     try:
-                        await status_msg.edit_text("⚠️ No speech detected in this video.")
+                        await status_msg.delete()
                     except Exception:
-                        if update.message:
-                            await update.message.reply_text("⚠️ No speech detected in this video.")
+                        pass
+                if update.message:
+                    await update.message.reply_text("⚠️ No speech detected in this video.")
                 cleanup_file(result.file_path)
                 return
 
             # ── STEP 5: Translate if needed ────────────────────────────────────
-            await status_msg.edit_text("🌐 Translating transcript...")
+            if status_msg:
+                try:
+                    await status_msg.edit_text("🌐 Translating transcript...")
+                except Exception:
+                    pass
 
             translator = Translator()
             processed = translator.process_transcript(transcript, hint_language=detected_lang, use_local_ai=use_local_ai)
@@ -666,19 +669,18 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             response_text = "\n".join(response_parts)
 
             # Split message if too long (Telegram ~4096 char limit)
+            if status_msg:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+
             if len(response_text) > 4000:
-                if status_msg:
-                    try:
-                        await status_msg.edit_text(
-                            f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
-                            "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
-                        )
-                    except Exception:
-                        if update.message:
-                            await update.message.reply_text(
-                                f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
-                                "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
-                            )
+                if update.message:
+                    await update.message.reply_text(
+                        f"🔍 **Detected Language:** {detected_lang_name} {detection_note}\n\n"
+                        "📝 **Transcript:**\n" + processed['original_transcript'][:3500]
+                    )
 
                 remaining = processed['original_transcript'][3500:]
                 if remaining:
@@ -692,12 +694,8 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                         if update.message:
                             await update.message.reply_text(trans_text[i:i+4000])
             else:
-                if status_msg:
-                    try:
-                        await status_msg.edit_text(response_text)
-                    except Exception:
-                        if update.message:
-                            await update.message.reply_text(response_text)
+                if update.message:
+                    await update.message.reply_text(response_text)
 
             cleanup_file(result.file_path)
             return
@@ -708,10 +706,21 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
 
     except Exception as e:
         logger.error(f"Error processing download: {e}", exc_info=True)
-        await status_msg.edit_text(
-            f"❌ An error occurred: {str(e)}\n"
-            "Please try again later."
-        )
+        try:
+            if status_msg:
+                await status_msg.edit_text(
+                    f"❌ An error occurred: {str(e)}\n"
+                    "Please try again later."
+                )
+        except Exception:
+            try:
+                if update.message:
+                    await update.message.reply_text(
+                        f"❌ An error occurred: {str(e)}\n"
+                        "Please try again later."
+                    )
+            except Exception:
+                pass
 
 
 def _check_yt_dlp_version():
