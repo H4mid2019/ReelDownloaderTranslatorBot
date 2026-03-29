@@ -659,7 +659,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             elif processed.get('english_translation'):
                 trans_text = str(processed['english_translation'])
                 response_parts.append("\n🌐 **English Translation:**")
-                response_parts.append(trans_text[:850])
+                response_parts.append(trans_text)
             else:
                 response_parts.append("\n⚠️ Translation not available")
 
