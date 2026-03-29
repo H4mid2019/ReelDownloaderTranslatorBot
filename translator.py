@@ -27,10 +27,11 @@ class Translator:
     def detect_language(self, text: str, use_local_ai: bool = False) -> dict:
         """
         Detect the language of the given text.
-        Uses character analysis and LLM to determine language.
+        Uses fast local 'langdetect' library (0.01 seconds) instead of a slow LLM call.
         
         Args:
             text: The text to analyze
+            use_local_ai: Ignored (now always local and instant)
         
         Returns:
             dict with 'language' (ISO code), 'language_name', 'confidence', 'error'
@@ -45,90 +46,50 @@ class Translator:
         
         # Check for Cyrillic characters (likely Bulgarian, Russian, Ukrainian, etc.)
         cyrillic_pattern = any('\u0400' <= c <= '\u04FF' for c in text)
-        if cyrillic_pattern:
+        
+        try:
+            import langdetect
+            
+            # Predict language probabilities
+            langs = langdetect.detect_langs(text)
+            if not langs:
+                raise ValueError("No languages detected")
+                
+            best_match = langs[0]
+            lang_code = best_match.lang
+            confidence = best_match.prob
+            
+            # Map standard codes to readable names (Whisper standard maps mostly)
+            LANGUAGE_NAMES = {
+                'bg': 'Bulgarian', 'en': 'English', 'es': 'Spanish', 'fr': 'French',
+                'de': 'German', 'it': 'Italian', 'pt': 'Portuguese', 'ru': 'Russian',
+                'uk': 'Ukrainian', 'pl': 'Polish', 'tr': 'Turkish', 'ar': 'Arabic',
+                'zh-cn': 'Chinese', 'zh-tw': 'Chinese', 'ko': 'Korean', 'hi': 'Hindi', 
+                'fa': 'Persian', 'ja': 'Japanese'
+            }
+            
+            lang_name = LANGUAGE_NAMES.get(lang_code, lang_code.title())
+            
             return {
-                'language': 'cyrillic',
-                'language_name': 'Cyrillic (likely Bulgarian/Russian)',
-                'confidence': 0.8,
+                'language': lang_code,
+                'language_name': lang_name,
+                'confidence': confidence,
                 'error': None
             }
-        
-        # Use LLM for more precise detection
-        prompt = f"""Analyze the following text and determine its language.
-Reply with ONLY one word:
-
-Text: "{text[:300]}"
-
-Possible languages: English, Persian, Bulgarian, Spanish, French, German, Italian, Portuguese, Russian, Ukrainian, Polish, Turkish, Arabic, Chinese, Japanese, Korean, Hindi, Other
-
-Reply with just the language name."""
-
-        try:
-            if use_local_ai and self.local_client:
-                response = self.local_client.chat.completions.create(
-                    model=self.local_model,
-                    messages=[
-                        {"role": "system", "content": "You are a language detection assistant."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=20
-                )
-            else:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "You are a language detection assistant."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=20
-                )
-            
-            result = response.choices[0].message.content.strip().lower()
-            
-            # Map to language codes
-            if 'english' in result:
-                return {'language': 'en', 'language_name': 'English', 'confidence': 0.95, 'error': None}
-            elif 'persian' in result or 'farsi' in result:
-                return {'language': 'fa', 'language_name': 'Persian', 'confidence': 0.95, 'error': None}
-            elif 'bulgarian' in result:
-                return {'language': 'bg', 'language_name': 'Bulgarian', 'confidence': 0.95, 'error': None}
-            elif 'russian' in result:
-                return {'language': 'ru', 'language_name': 'Russian', 'confidence': 0.95, 'error': None}
-            elif 'ukrainian' in result:
-                return {'language': 'uk', 'language_name': 'Ukrainian', 'confidence': 0.95, 'error': None}
-            elif 'spanish' in result:
-                return {'language': 'es', 'language_name': 'Spanish', 'confidence': 0.95, 'error': None}
-            elif 'french' in result:
-                return {'language': 'fr', 'language_name': 'French', 'confidence': 0.95, 'error': None}
-            elif 'german' in result:
-                return {'language': 'de', 'language_name': 'German', 'confidence': 0.95, 'error': None}
-            elif 'italian' in result:
-                return {'language': 'it', 'language_name': 'Italian', 'confidence': 0.95, 'error': None}
-            elif 'portuguese' in result:
-                return {'language': 'pt', 'language_name': 'Portuguese', 'confidence': 0.95, 'error': None}
-            elif 'polish' in result:
-                return {'language': 'pl', 'language_name': 'Polish', 'confidence': 0.95, 'error': None}
-            elif 'turkish' in result:
-                return {'language': 'tr', 'language_name': 'Turkish', 'confidence': 0.95, 'error': None}
-            elif 'arabic' in result:
-                return {'language': 'ar', 'language_name': 'Arabic', 'confidence': 0.95, 'error': None}
-            elif 'chinese' in result:
-                return {'language': 'zh', 'language_name': 'Chinese', 'confidence': 0.95, 'error': None}
-            elif 'japanese' in result:
-                return {'language': 'ja', 'language_name': 'Japanese', 'confidence': 0.95, 'error': None}
-            elif 'korean' in result:
-                return {'language': 'ko', 'language_name': 'Korean', 'confidence': 0.95, 'error': None}
-            elif 'hindi' in result:
-                return {'language': 'hi', 'language_name': 'Hindi', 'confidence': 0.95, 'error': None}
-            else:
-                return {'language': 'other', 'language_name': 'Other', 'confidence': 0.5, 'error': None}
                 
-        except Exception as e:
+        except ImportError:
             return {
                 'language': None,
                 'language_name': None,
+                'confidence': 0,
+                'error': "langdetect library is missing. Run pip install langdetect."
+            }
+        except Exception as e:
+            if cyrillic_pattern:
+                return {'language': 'ru', 'language_name': 'Russian', 'confidence': 0.5, 'error': None}
+            return {
+                'language': 'other',
+                'language_name': 'Other',
                 'confidence': 0,
                 'error': f"Language detection error: {str(e)}"
             }

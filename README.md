@@ -46,23 +46,16 @@ Simply send or forward any supported link to the bot. It will automatically dete
 
 If you are hitting Groq's Free Tier rate limits, you can easily host your own local AI endpoints for free using Docker. The following setup runs extremely well even on CPU-only ARM servers (e.g. Free Tier Oracle Cloud instances).
 
-1. Clone the high-speed Parakeet speech-to-text API:
-```bash
-git clone https://github.com/groxaxo/parakeet-tdt-0.6b-v3-fastapi-openai.git
-cd parakeet-tdt-0.6b-v3-fastapi-openai
-```
-
-2. Replace its `docker-compose.yml` with this combined configuration which spins up both Parakeet (Port 8000) and Ollama for LLM fallback (Port 11434):
+1. Create a new directory on your server (e.g. `ai-fallback`) and create a `docker-compose.yml` file with this configuration to spin up both Faster-Whisper (Port 8000) and Ollama for LLM fallback (Port 11434):
 ```yaml
-version: '3.8'
-
 services:
-  parakeet-cpu:
-    build:
-      context: .
-    container_name: parakeet-stt
+  whisper-stt:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: local-stt
     ports:
       - "8000:8000"
+    environment:
+      - WHISPER__MODEL=base
     restart: unless-stopped
 
   local-llm:
@@ -78,7 +71,7 @@ volumes:
   ollama_data:
 ```
 
-3. Start the services and tell Ollama to pull the `qwen2.5:3b` model:
+2. Start the services and tell Ollama to pull the `qwen2.5:3b` model:
 ```bash
 docker compose up -d
 docker exec -it local-llm ollama pull qwen2.5:3b
