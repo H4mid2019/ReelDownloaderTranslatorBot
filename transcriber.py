@@ -9,7 +9,11 @@ import os
 import subprocess
 import tempfile
 import groq
-from config import GROQ_API_KEY, TRANSCRIPTION_MODEL
+try:
+    import openai
+except ImportError:
+    openai = None
+from config import GROQ_API_KEY, TRANSCRIPTION_MODEL, LOCAL_STT_URL, LOCAL_STT_MODEL
 from typing import Optional
 
 
@@ -47,6 +51,8 @@ class Transcriber:
     def __init__(self):
         self.client = groq.Groq(api_key=GROQ_API_KEY)
         self.model = TRANSCRIPTION_MODEL
+        self.local_client = openai.OpenAI(base_url=LOCAL_STT_URL, api_key="local") if openai else None
+        self.local_model = LOCAL_STT_MODEL
     
     def extract_audio(self, video_path: str) -> str:
         """
@@ -77,7 +83,7 @@ class Transcriber:
         except FileNotFoundError:
             raise Exception("ffmpeg not found. Please install ffmpeg: sudo apt install ffmpeg")
     
-    def transcribe_audio(self, audio_file_path: str, force_language: Optional[str] = None) -> dict:
+    def transcribe_audio(self, audio_file_path: str, force_language: Optional[str] = None, use_local_ai: bool = False) -> dict:
         """
         Transcribe an audio/video file using Groq Whisper.
         
@@ -133,20 +139,34 @@ class Transcriber:
         
         try:
             with open(audio_to_transcribe, 'rb') as audio_file:
-                # Build transcription parameters
-                params = {
-                    'model': self.model,
-                    'response_format': 'verbose_json',
-                }
-                
-                if force_language:
-                    params['language'] = force_language
-                
-                # Perform transcription
-                response = self.client.audio.transcriptions.create(
-                    file=(os.path.basename(audio_to_transcribe), audio_file),
-                    **params
-                )
+                if use_local_ai and self.local_client:
+                    # Build transcription parameters for Local AI
+                    params = {
+                        'model': self.local_model,
+                        'response_format': 'verbose_json',
+                    }
+                    if force_language:
+                        params['language'] = force_language
+                        
+                    response = self.local_client.audio.transcriptions.create(
+                        file=(os.path.basename(audio_to_transcribe), audio_file),
+                        **params
+                    )
+                else:
+                    # Build transcription parameters for Groq
+                    params = {
+                        'model': self.model,
+                        'response_format': 'verbose_json',
+                    }
+                    
+                    if force_language:
+                        params['language'] = force_language
+                    
+                    # Perform transcription
+                    response = self.client.audio.transcriptions.create(
+                        file=(os.path.basename(audio_to_transcribe), audio_file),
+                        **params
+                    )
                 
                 # Extract transcript
                 transcript = response.text.strip() if hasattr(response, 'text') else str(response).strip()
@@ -215,15 +235,15 @@ class Transcriber:
                 except Exception:
                     pass
     
-    def transcribe_video(self, video_file_path: str, force_language: Optional[str] = None) -> dict:
+    def transcribe_video(self, video_file_path: str, force_language: Optional[str] = None, use_local_ai: bool = False) -> dict:
         """
         Convenience method for transcribing video files.
         Extracts audio first if video is too large.
         """
-        return self.transcribe_audio(video_file_path, force_language)
+        return self.transcribe_audio(video_file_path, force_language, use_local_ai)
 
 
-def transcribe_file(file_path: str, force_language: Optional[str] = None) -> dict:
+def transcribe_file(file_path: str, force_language: Optional[str] = None, use_local_ai: bool = False) -> dict:
     """Quick helper function for transcribing a file."""
     transcriber = Transcriber()
-    return transcriber.transcribe_video(file_path, force_language)
+    return transcriber.transcribe_video(file_path, force_language, use_local_ai)

@@ -3,7 +3,11 @@ Language detection and translation using Groq LLM API.
 Handles translation of any non-English language to English.
 """
 import groq
-from config import GROQ_API_KEY, TRANSLATION_MODEL
+try:
+    import openai
+except ImportError:
+    openai = None
+from config import GROQ_API_KEY, TRANSLATION_MODEL, LOCAL_LLM_URL, LOCAL_LLM_MODEL
 
 from typing import Optional
 
@@ -17,8 +21,10 @@ class Translator:
     def __init__(self):
         self.client = groq.Groq(api_key=GROQ_API_KEY)
         self.model = TRANSLATION_MODEL
+        self.local_client = openai.OpenAI(base_url=LOCAL_LLM_URL, api_key="local") if openai else None
+        self.local_model = LOCAL_LLM_MODEL
     
-    def detect_language(self, text: str) -> dict:
+    def detect_language(self, text: str, use_local_ai: bool = False) -> dict:
         """
         Detect the language of the given text.
         Uses character analysis and LLM to determine language.
@@ -58,15 +64,26 @@ Possible languages: English, Persian, Bulgarian, Spanish, French, German, Italia
 Reply with just the language name."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are a language detection assistant."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=20
-            )
+            if use_local_ai and self.local_client:
+                response = self.local_client.chat.completions.create(
+                    model=self.local_model,
+                    messages=[
+                        {"role": "system", "content": "You are a language detection assistant."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=20
+                )
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "You are a language detection assistant."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=20
+                )
             
             result = response.choices[0].message.content.strip().lower()
             
@@ -116,7 +133,7 @@ Reply with just the language name."""
                 'error': f"Language detection error: {str(e)}"
             }
     
-    def translate_to_english(self, text: str, source_language: str = "unknown") -> dict:
+    def translate_to_english(self, text: str, source_language: str = "unknown", use_local_ai: bool = False) -> dict:
         """
         Translate text to English.
         
@@ -146,15 +163,26 @@ Text to translate:
 Provide ONLY the English translation, nothing else."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": f"You are a professional translator. Translate {source_language} to English accurately."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3,
-                max_tokens=2000
-            )
+            if use_local_ai and self.local_client:
+                response = self.local_client.chat.completions.create(
+                    model=self.local_model,
+                    messages=[
+                        {"role": "system", "content": f"You are a professional translator. Translate {source_language} to English accurately."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=2000
+                )
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": f"You are a professional translator. Translate {source_language} to English accurately."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=2000
+                )
             
             translation = response.choices[0].message.content.strip()
             
@@ -174,7 +202,7 @@ Provide ONLY the English translation, nothing else."""
                 'error': f"Translation error: {str(e)}"
             }
     
-    def process_transcript(self, transcript: str, hint_language: Optional[str] = None) -> dict:
+    def process_transcript(self, transcript: str, hint_language: Optional[str] = None, use_local_ai: bool = False) -> dict:
         """
         Process a transcript: detect language and translate to English if needed.
         
@@ -207,7 +235,7 @@ Provide ONLY the English translation, nothing else."""
             result['is_persian'] = hint_language.lower() in ('fa', 'fas', 'per', 'persian')
         else:
             # Detect language
-            detection = self.detect_language(transcript)
+            detection = self.detect_language(transcript, use_local_ai)
             result['detected_language'] = detection['language']
             result['detected_language_name'] = detection['language_name']
             result['is_english'] = detection['language'] in self.ENGLISH_CODES
@@ -219,7 +247,8 @@ Provide ONLY the English translation, nothing else."""
         if not result['is_english'] and not result['is_persian']:
             translation_result = self.translate_to_english(
                 transcript, 
-                str(result['detected_language_name'] or "unknown")
+                str(result['detected_language_name'] or "unknown"),
+                use_local_ai
             )
             result['english_translation'] = translation_result['translation']
             if translation_result['error']:
@@ -231,16 +260,17 @@ Provide ONLY the English translation, nothing else."""
         return result
 
 
-def detect_and_translate(transcript: str, hint_language: Optional[str] = None) -> dict:
+def detect_and_translate(transcript: str, hint_language: Optional[str] = None, use_local_ai: bool = False) -> dict:
     """
     Quick helper function for detecting language and translating.
     
     Args:
         transcript: The text to process
         hint_language: Optional language hint
+        use_local_ai: Whether to use local AI fallback logic
     
     Returns:
         dict with processing results
     """
     translator = Translator()
-    return translator.process_transcript(transcript, hint_language)
+    return translator.process_transcript(transcript, hint_language, use_local_ai)

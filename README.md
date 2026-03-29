@@ -42,6 +42,50 @@ Simply send or forward any supported link to the bot. It will automatically dete
     - Videos >50MB are automatically split into parts to stay within Telegram limits.
     - Automatic remuxing for maximum compatibility with Telegram's video player.
 
+## 🛡️ Local AI Fallback (Optional)
+
+If you are hitting Groq's Free Tier rate limits, you can easily host your own local AI endpoints for free using Docker. The following setup runs extremely well even on CPU-only ARM servers (e.g. Free Tier Oracle Cloud instances).
+
+1. Clone the high-speed Parakeet speech-to-text API:
+```bash
+git clone https://github.com/groxaxo/parakeet-tdt-0.6b-v3-fastapi-openai.git
+cd parakeet-tdt-0.6b-v3-fastapi-openai
+```
+
+2. Replace its `docker-compose.yml` with this combined configuration which spins up both Parakeet (Port 8000) and Ollama for LLM fallback (Port 11434):
+```yaml
+version: '3.8'
+
+services:
+  parakeet-cpu:
+    build:
+      context: .
+    container_name: parakeet-stt
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  local-llm:
+    image: ollama/ollama:latest
+    container_name: local-llm
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+```
+
+3. Start the services and tell Ollama to pull the `qwen2.5:3b` model:
+```bash
+docker compose up -d
+docker exec -it local-llm ollama pull qwen2.5:3b
+```
+
+4. Update your bot logic to point the OpenAI clients to `http://localhost:8000/v1` for audio transcriptions and `http://localhost:11434/v1` for text translations!
+
 ## 🔑 API Keys & Config
 
 - **Telegram Bot Token**: Get from [@BotFather](https://t.me/BotFather)

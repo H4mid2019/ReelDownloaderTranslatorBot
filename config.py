@@ -30,6 +30,13 @@ INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3")
 TRANSLATION_MODEL = os.getenv("TRANSLATION_MODEL", "llama-3.3-70b-versatile")
 
+# Local AI Fallback configurations
+USE_LOCAL_AI = os.getenv("USE_LOCAL_AI", "False").lower() in ("true", "1", "yes")
+LOCAL_STT_URL = os.getenv("LOCAL_STT_URL", "http://localhost:8000/v1")
+LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL", "http://localhost:11434/v1")
+LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "parakeet-v3")
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b")
+
 # Logging configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 

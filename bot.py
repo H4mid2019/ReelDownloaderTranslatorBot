@@ -17,7 +17,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import TELEGRAM_BOT_TOKEN, MAX_VIDEO_SIZE_MB, MAX_VIDEO_SIZE_BYTES, LOG_LEVEL
+from config import TELEGRAM_BOT_TOKEN, MAX_VIDEO_SIZE_MB, MAX_VIDEO_SIZE_BYTES, LOG_LEVEL, USE_LOCAL_AI
 from downloader import download_video, detect_platform
 from transcriber import Transcriber
 from translator import Translator
@@ -74,7 +74,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📝 **Commands:**\n"
         "/chatid - Get the current chat ID\n"
         "/help - Show detailed help\n"
-        "/d <url> - Manual download (if auto-detect fails)\n\n"
+        "/d <url> - Manual download (if auto-detect fails)\n"
+        "/dl <url> - Manual download using Local AI Fallback\n\n"
         + DISCLAIMER
     )
 
@@ -320,6 +321,26 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_url(update, context, url)
 
 
+async def download_local_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Command handler for /dl to test Local AI fallback."""
+    if not update.message:
+        return
+    if not USE_LOCAL_AI:
+        await update.message.reply_text("⚠️ **Local AI** fallback is disabled in the bot's configuration.")
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Please provide a URL.\n"
+            "Usage: /dl <url>\n\n"
+            "Example: /dl https://www.instagram.com/reel/ABC123/\n\n"
+            + DISCLAIMER
+        )
+        return
+
+    url = ' '.join(context.args)
+    await process_url(update, context, url, use_local_ai=True)
+
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle regular text messages to auto-detect supported URLs."""
     if not update.message:
@@ -336,7 +357,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
 
-async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
+async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, use_local_ai: bool = False):
     """
     Process a detected or provided URL.
     Downloads Instagram post or Tweet, sends video first, then transcribes and translates.
@@ -378,7 +399,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 if status_msg:
                     await status_msg.edit_text("🌐 Checking language & translating text...")
                 trans = Translator()
-                t_res = trans.process_transcript(text_to_translate[:1000]) # Use first 1000 chars for lang detection + trans
+                t_res = trans.process_transcript(text_to_translate[:1000], use_local_ai=use_local_ai) # Use first 1000 chars for lang detection + trans
                 if t_res.get('english_translation') and not t_res.get('error'):
                     translated_caption = t_res['english_translation']
             except Exception as e:
@@ -536,7 +557,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             )
 
             transcriber = Transcriber()
-            transcript_result = transcriber.transcribe_video(result.file_path)
+            transcript_result = transcriber.transcribe_video(result.file_path, use_local_ai=use_local_ai)
 
             if transcript_result['error'] and not transcript_result.get('skipped'):
                 # Transcription/detection actually failed (not just skipped for Persian)
@@ -613,7 +634,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             await status_msg.edit_text("🌐 Translating transcript...")
 
             translator = Translator()
-            processed = translator.process_transcript(transcript, hint_language=detected_lang)
+            processed = translator.process_transcript(transcript, hint_language=detected_lang, use_local_ai=use_local_ai)
 
             # ── STEP 6: Build and send response message ────────────────────────
             detection_note = "(auto-detected)" if auto_detected else "(user specified)"
@@ -721,6 +742,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("chatid", chatid_command))
     application.add_handler(CommandHandler("d", download_command))
+    application.add_handler(CommandHandler("dl", download_local_command))
 
     application.add_handler(
         MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_text_message)
