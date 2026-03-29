@@ -406,11 +406,16 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 if status_msg:
                     await status_msg.edit_text("🌐 Checking language & translating text...")
                 trans = Translator()
-                t_res = trans.process_transcript(text_to_translate[:1000], use_local_ai=use_local_ai) # Use first 1000 chars for lang detection + trans
-                if t_res.get('english_translation') and not t_res.get('error'):
+                t_res = trans.process_transcript(text_to_translate[:1000], use_local_ai=use_local_ai)
+                logger.info(f"Caption lang detection: is_english={t_res.get('is_english')}, has_translation={bool(t_res.get('english_translation'))}, error={t_res.get('error')}")
+                # Accept translation even if there was a minor detection error
+                if t_res.get('english_translation'):
                     translated_caption = t_res['english_translation']
+                elif t_res.get('error'):
+                    logger.warning(f"Caption translation skipped due to error: {t_res.get('error')}")
             except Exception as e:
                 logger.warning(f"Text translation failed: {e}")
+
 
         # ── Handle GALLERY (Carousel) ─────────────────────────────────────────
         if result.media_type == 'gallery' or len(result.file_paths) > 1:
