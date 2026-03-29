@@ -40,8 +40,8 @@ DISCLAIMER = """
 • Use at your own risk
 """
 
-# Chunk size for splitting large videos (45MB to stay under 50MB Telegram limit)
-VIDEO_CHUNK_SIZE_BYTES = 45 * 1024 * 1024
+# Chunk size for splitting large videos (30MB target provides 20MB buffer for keyframe bleeding)
+VIDEO_CHUNK_SIZE_BYTES = 30 * 1024 * 1024
 
 
 async def post_init(application: Application):
@@ -273,7 +273,14 @@ async def send_video_or_chunks(
 
         total_parts = len(chunk_paths)
         for idx, chunk_path in enumerate(chunk_paths, 1):
-            chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
+            chunk_size_bytes = os.path.getsize(chunk_path)
+            chunk_size_mb = chunk_size_bytes / (1024 * 1024)
+            
+            # Failsafe against Telegram's hard 50MB limit
+            if chunk_size_mb > 49.5:
+                if status_msg:
+                    await status_msg.reply_text(f"⚠️ **Skipped Part {idx}/{total_parts}:**\nThis segment is {chunk_size_mb:.1f} MB, which randomly exceeded Telegram's 50MB hard limit due to the video's extreme keyframe distribution.")
+                continue
             footer = f"\n\n🎬 Video ({platform}) — Part {idx}/{total_parts}\n📏 Part: {chunk_size_mb:.2f} MB\n🔊 Language: {lang_name}"
             if post_caption and translated_caption:
                 sep = "\n\n🌐 **Translation:**\n"
