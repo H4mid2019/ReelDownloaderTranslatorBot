@@ -430,82 +430,98 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
     logger = logging.getLogger(__name__)
     logger.info(f"Attempting instaloader for: {url}")
 
+    import contextlib
+    import io
     try:
-        # Extract shortcode from URL  (e.g. DWiiZ4bN52Y)
-        m = re.search(r'/(reel|reels|p|tv)/([\w-]+)', url)
-        if not m:
-            return MediaResult(post_url=url, platform='instagram', error="Cannot parse shortcode from URL")
-        shortcode = m.group(2)
+        # Suppress instaloader's own stdout chatter (e.g. "403 Forbidden [retrying]")
+        _suppress = open(os.devnull, 'w') if hasattr(os, 'devnull') else io.StringIO()
+        with contextlib.redirect_stdout(_suppress):
+            # Extract shortcode from URL  (e.g. DWiiZ4bN52Y)
+            m = re.search(r'/(reel|reels|p|tv)/([\w-]+)', url)
+            if not m:
+                return MediaResult(post_url=url, platform='instagram', error="Cannot parse shortcode from URL")
+            shortcode = m.group(2)
 
-        # Build an Instaloader instance and inject our session cookies
-        L = instaloader.Instaloader(
-            download_videos=True,
-            download_video_thumbnails=False,
-            download_geotags=False,
-            download_comments=False,
-            save_metadata=False,
-            compress_json=False,
-            quiet=True,
-        )
-        import requests  # instaloader uses requests under the hood
-        expiry = int(time.time()) + 60 * 60 * 24 * 365
-
-        # Prefer full cookies file (all cookies = less 403s from Instagram)
-        cookies_file = INSTAGRAM_COOKIES_FILE if (INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE)) else None
-        if cookies_file:
-            # Load Netscape cookies file into the requests session
-            from http.cookiejar import MozillaCookieJar
-            jar = MozillaCookieJar(cookies_file)
-            jar.load(ignore_discard=True, ignore_expires=True)
-            for c in jar:
-                L.context._session.cookies.set(c.name, c.value, domain=c.domain, path=c.path)  # type: ignore[attr-defined]
-            logger.debug(f"instaloader: loaded {len(list(jar))} cookies from {cookies_file}")
-        else:
-            # Fallback: inject session ID cookie only
-            if not INSTAGRAM_SESSION_ID:
-                return MediaResult(post_url=url, platform='instagram', error="No cookies configured (set INSTAGRAM_COOKIES_FILE or INSTAGRAM_SESSION_ID)")
-            cookie = requests.cookies.create_cookie(
-                name='sessionid',
-                value=INSTAGRAM_SESSION_ID,
-                domain='.instagram.com',
-                path='/',
-                secure=True,
-                expires=expiry,
+            # Build an Instaloader instance and inject our session cookies
+            L = instaloader.Instaloader(
+                download_videos=True,
+                download_video_thumbnails=False,
+                download_geotags=False,
+                download_comments=False,
+                save_metadata=False,
+                compress_json=False,
+                quiet=True,
             )
-            L.context._session.cookies.set_cookie(cookie)  # type: ignore[attr-defined]
+            import requests  # instaloader uses requests under the hood
+            expiry = int(time.time()) + 60 * 60 * 24 * 365
 
-        # Signal to instaloader that we are logged in so it skips anonymous-only paths
-        L.context.username = INSTAGRAM_USERNAME or 'user'  # type: ignore[attr-defined]
+            # Prefer full cookies file (all cookies = fewer 403s from Instagram)
+            cookies_file = INSTAGRAM_COOKIES_FILE if (INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE)) else None
+            if cookies_file:
+                from http.cookiejar import MozillaCookieJar
+                jar = MozillaCookieJar(cookies_file)
+                jar.load(ignore_discard=True, ignore_expires=True)
+                for c in jar:
+                    L.context._session.cookies.set(c.name, c.value, domain=c.domain, path=c.path)  # type: ignore[attr-defined]
+                logger.debug(f"instaloader: loaded {len(list(jar))} cookies from {cookies_file}")
+            else:
+                # Fallback: inject session ID cookie only
+                if not INSTAGRAM_SESSION_ID:
+                    return MediaResult(post_url=url, platform='instagram', error="No cookies configured (set INSTAGRAM_COOKIES_FILE or INSTAGRAM_SESSION_ID)")
+                cookie = requests.cookies.create_cookie(
+                    name='sessionid',
+                    value=INSTAGRAM_SESSION_ID,
+                    domain='.instagram.com',
+                    path='/',
+                    secure=True,
+                    expires=expiry,
+                )
+                L.context._session.cookies.set_cookie(cookie)  # type: ignore[attr-defined]
 
-        post = instaloader.Post.from_shortcode(L.context, shortcode)
-        caption = post.caption or ''
+            # Signal to instaloader that we are logged in so it skips anonymous-only paths
+            L.context.username = INSTAGRAM_USERNAME or 'user'  # type: ignore[attr-defined]
 
-        file_paths: List[str] = []
-        file_size_bytes = 0
+            post = instaloader.Post.from_shortcode(L.context, shortcode)
+            caption = post.caption or ''
 
-        if post.is_video:
-            # Download video directly via requests to avoid instaloader's file-naming
-            import urllib.request
-            video_url = post.video_url
-            out_path = os.path.join(download_dir, f"{shortcode}.mp4")
-            req = urllib.request.Request(video_url, headers={
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
-                              'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-                'Referer': 'https://www.instagram.com/',
-            })
-            with urllib.request.urlopen(req, timeout=60) as resp, open(out_path, 'wb') as f:
-                f.write(resp.read())
-            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-                file_paths.append(out_path)
-                file_size_bytes = os.path.getsize(out_path)
-        else:
-            # Image or sidecar (carousel)
-            if post.typename == 'GraphSidecar':
-                for i, node in enumerate(post.get_sidecar_nodes()):
+            file_paths: List[str] = []
+            file_size_bytes = 0
+
+            if post.is_video:
+                import urllib.request
+                video_url = post.video_url
+                out_path = os.path.join(download_dir, f"{shortcode}.mp4")
+                req = urllib.request.Request(video_url, headers={
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+                                  'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                    'Referer': 'https://www.instagram.com/',
+                })
+                with urllib.request.urlopen(req, timeout=60) as resp, open(out_path, 'wb') as f:
+                    f.write(resp.read())
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                    file_paths.append(out_path)
+                    file_size_bytes = os.path.getsize(out_path)
+            else:
+                # Image or sidecar (carousel)
+                if post.typename == 'GraphSidecar':
+                    for i, node in enumerate(post.get_sidecar_nodes()):
+                        import urllib.request
+                        img_url = node.video_url if node.is_video else node.display_url
+                        ext = '.mp4' if node.is_video else '.jpg'
+                        out_path = os.path.join(download_dir, f"{shortcode}_{i}{ext}")
+                        req = urllib.request.Request(img_url, headers={
+                            'User-Agent': 'Mozilla/5.0',
+                            'Referer': 'https://www.instagram.com/',
+                        })
+                        with urllib.request.urlopen(req, timeout=60) as resp, open(out_path, 'wb') as f:
+                            f.write(resp.read())
+                        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                            file_paths.append(out_path)
+                            file_size_bytes += os.path.getsize(out_path)
+                else:
                     import urllib.request
-                    img_url = node.video_url if node.is_video else node.display_url
-                    ext = '.mp4' if node.is_video else '.jpg'
-                    out_path = os.path.join(download_dir, f"{shortcode}_{i}{ext}")
+                    img_url = post.url
+                    out_path = os.path.join(download_dir, f"{shortcode}.jpg")
                     req = urllib.request.Request(img_url, headers={
                         'User-Agent': 'Mozilla/5.0',
                         'Referer': 'https://www.instagram.com/',
@@ -514,39 +530,27 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
                         f.write(resp.read())
                     if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
                         file_paths.append(out_path)
-                        file_size_bytes += os.path.getsize(out_path)
-            else:
-                import urllib.request
-                img_url = post.url
-                out_path = os.path.join(download_dir, f"{shortcode}.jpg")
-                req = urllib.request.Request(img_url, headers={
-                    'User-Agent': 'Mozilla/5.0',
-                    'Referer': 'https://www.instagram.com/',
-                })
-                with urllib.request.urlopen(req, timeout=60) as resp, open(out_path, 'wb') as f:
-                    f.write(resp.read())
-                if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-                    file_paths.append(out_path)
-                    file_size_bytes = os.path.getsize(out_path)
+                        file_size_bytes = os.path.getsize(out_path)
 
-        if not file_paths:
-            return MediaResult(post_url=url, platform='instagram', error="instaloader: no files downloaded")
+            if not file_paths:
+                return MediaResult(post_url=url, platform='instagram', error="instaloader: no files downloaded")
 
-        file_paths.sort()
-        has_video = any(p.endswith('.mp4') for p in file_paths)
-        return MediaResult(
-            post_url=url,
-            platform='instagram',
-            media_type='gallery' if len(file_paths) > 1 else ('video' if has_video else 'photo'),
-            file_path=file_paths[0],
-            file_paths=file_paths,
-            file_size_bytes=file_size_bytes,
-            caption=caption,
-            error=None,
-        )
+            file_paths.sort()
+            has_video = any(p.endswith('.mp4') for p in file_paths)
+            return MediaResult(
+                post_url=url,
+                platform='instagram',
+                media_type='gallery' if len(file_paths) > 1 else ('video' if has_video else 'photo'),
+                file_path=file_paths[0],
+                file_paths=file_paths,
+                file_size_bytes=file_size_bytes,
+                caption=caption,
+                error=None,
+            )
     except Exception as e:
         logger.error(f"instaloader failed: {e}")
         return MediaResult(post_url=url, platform='instagram', error=f"instaloader failed: {e}")
+
 
 
 def download_video(url: str) -> MediaResult:
