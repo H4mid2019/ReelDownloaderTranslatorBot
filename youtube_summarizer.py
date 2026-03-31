@@ -12,8 +12,6 @@ from youtube_transcript_api._errors import (
     TranscriptsDisabled,
     NoTranscriptFound,
     VideoUnavailable,
-    FailedToCreateSubtitles,
-    CouldNotRetrieveSpeechRecognitions,
 )
 
 logger = logging.getLogger(__name__)
@@ -176,14 +174,6 @@ class YouTubeSummarizer:
                 "is_auto_generated": False,
                 "duration_seconds": 0,
                 "error": "This video has disabled subtitles/transcripts",
-            }
-        except (FailedToCreateSubtitles, CouldNotRetrieveSpeechRecognitions):
-            return {
-                "text": "",
-                "language": "unknown",
-                "is_auto_generated": False,
-                "duration_seconds": 0,
-                "error": "Failed to retrieve transcript. YouTube may be blocking this video.",
             }
         except Exception as e:
             error_str = str(e).lower()
