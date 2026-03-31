@@ -1,11 +1,12 @@
 """
 YouTube metadata and transcript extraction.
-Uses youtube-transcript-api for transcript extraction and yt-dlp for metadata.
+Uses youtube-transcript-api for transcript extraction and YouTube oEmbed API for metadata.
 """
 
 import logging
 import re
-import yt_dlp  # type: ignore[import-untyped]
+import urllib.request
+import json
 
 
 logger = logging.getLogger(__name__)
@@ -26,65 +27,43 @@ class YouTubeSummarizer:
 
     def get_metadata(self, url: str) -> dict:
         """
-        Get video metadata using yt-dlp (info extraction only, no download).
+        Get video metadata using YouTube oEmbed API (no auth required).
 
         Returns:
-            dict with: video_id, title, description, duration, duration_formatted,
-                       thumbnail, url
+            dict with: video_id, title, thumbnail, url, author_name
         """
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "extract_flat": False,
-            "skip_download": True,
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            },
-        }
-
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+            video_id = self._extract_video_id(url)
 
-            if not info:
-                return {"error": "Failed to extract video information"}
+            # Use oEmbed API - free, no auth required
+            oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+            req = urllib.request.Request(
+                oembed_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; Bot/1.0)",
+                    "Accept": "application/json",
+                },
+            )
 
-            video_id = info.get("id", "")
-            duration = info.get("duration") or 0
-
-            # Format duration as HH:MM:SS or MM:SS
-            if duration:
-                hours, remainder = divmod(int(duration), 3600)
-                minutes, seconds = divmod(remainder, 60)
-                if hours > 0:
-                    duration_formatted = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                else:
-                    duration_formatted = f"{minutes:02d}:{seconds:02d}"
-            else:
-                duration_formatted = "N/A"
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode("utf-8"))
 
             return {
                 "video_id": video_id,
-                "title": info.get("title", "Unknown Video"),
-                "description": info.get("description", ""),
-                "duration": duration,
-                "duration_formatted": duration_formatted,
-                "thumbnail": info.get("thumbnail", ""),
+                "title": data.get("title", "Unknown Video"),
+                "author_name": data.get("author_name", "Unknown"),
+                "thumbnail": f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
                 "url": url,
-                "uploader": info.get("uploader", ""),
-                "view_count": info.get("view_count", 0),
                 "error": None,
             }
 
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return {"error": "This video is not available or has been removed"}
+            elif e.code == 403:
+                return {"error": "This video is private or restricted"}
+            return {"error": f"Failed to get video metadata: HTTP {e.code}"}
         except Exception as e:
-            error_msg = str(e).lower()
-            if "private" in error_msg:
-                return {"error": "This video is private"}
-            if "age" in error_msg or "age-restricted" in error_msg:
-                return {"error": "This video is age-restricted"}
-            if "region" in error_msg or "blocked" in error_msg:
-                return {"error": "This video is not available in your region"}
             return {"error": f"Failed to get video metadata: {str(e)}"}
 
     def extract_transcript(self, url: str) -> dict:
@@ -92,7 +71,7 @@ class YouTubeSummarizer:
         Extract transcript using youtube-transcript-api.
 
         Returns:
-            dict with: text, language, is_auto_generated, error
+            dict with: text, language, is_auto_generated, duration_seconds, error
         """
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
@@ -100,6 +79,8 @@ class YouTubeSummarizer:
                 TranscriptsDisabled,
                 NoTranscriptFound,
                 VideoUnavailable,
+                FailedToCreateSubtitles,
+                CouldNotRetrieveSpeechRecognitions,
             )
 
             # Extract video ID from URL
@@ -109,6 +90,10 @@ class YouTubeSummarizer:
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
             # Priority: manually created > auto-generated (English) > any auto-generated
+            transcript = None
+            is_auto = False
+            language_code = "en"
+
             try:
                 # Try English first
                 transcript = transcript_list.find_transcript(["en"])
@@ -116,32 +101,49 @@ class YouTubeSummarizer:
                 language_code = transcript.language_code
             except NoTranscriptFound:
                 try:
-                    # Try any manually created transcript
-                    transcript = transcript_list.find_transcript(
-                        [t.language_code for t in transcript_list]
-                    )
-                    is_auto = transcript.is_generated
-                    language_code = transcript.language_code
+                    # Try any manually created transcript (not auto-generated)
+                    for t in transcript_list:
+                        if not t.is_generated:
+                            transcript = t
+                            is_auto = False
+                            language_code = t.language_code
+                            break
+                except Exception:
+                    pass
+
+            # Fallback to any auto-generated
+            if transcript is None:
+                try:
+                    transcript = transcript_list.find_generated_transcript(["en"])
+                    is_auto = True
+                    language_code = "en"
                 except NoTranscriptFound:
-                    # Fallback to auto-generated
+                    # Try any available transcript
                     try:
-                        transcript = transcript_list.find_generated_transcript(
-                            ["en"]
+                        transcript = transcript_list.find_transcript(
+                            [t.language_code for t in transcript_list]
                         )
-                        is_auto = True
-                        language_code = "en"
+                        is_auto = transcript.is_generated
+                        language_code = transcript.language_code
                     except NoTranscriptFound:
                         return {
                             "text": "",
                             "language": "unknown",
                             "is_auto_generated": False,
+                            "duration_seconds": 0,
                             "error": "This video doesn't have subtitles or transcripts available",
                         }
 
             # Fetch transcript data
             transcript_data = transcript.fetch()
 
-            # Combine into single text, preserving paragraph breaks
+            # Calculate duration from transcript entries
+            duration_seconds = 0
+            if transcript_data:
+                last_entry = transcript_data[-1]
+                duration_seconds = last_entry.start + last_entry.duration
+
+            # Combine into single text
             lines = []
             for entry in transcript_data:
                 text = entry.text.strip()
@@ -157,6 +159,7 @@ class YouTubeSummarizer:
                 "text": full_text,
                 "language": detected_lang,
                 "is_auto_generated": is_auto,
+                "duration_seconds": duration_seconds,
                 "error": None,
             }
 
@@ -165,6 +168,7 @@ class YouTubeSummarizer:
                 "text": "",
                 "language": "unknown",
                 "is_auto_generated": False,
+                "duration_seconds": 0,
                 "error": "youtube-transcript-api not installed. Run: pip install youtube-transcript-api",
             }
         except VideoUnavailable:
@@ -172,6 +176,7 @@ class YouTubeSummarizer:
                 "text": "",
                 "language": "unknown",
                 "is_auto_generated": False,
+                "duration_seconds": 0,
                 "error": "This video is not available or has been removed",
             }
         except TranscriptsDisabled:
@@ -179,21 +184,33 @@ class YouTubeSummarizer:
                 "text": "",
                 "language": "unknown",
                 "is_auto_generated": False,
+                "duration_seconds": 0,
                 "error": "This video has disabled subtitles/transcripts",
             }
-        except NoTranscriptFound:
+        except (FailedToCreateSubtitles, CouldNotRetrieveSpeechRecognitions):
             return {
                 "text": "",
                 "language": "unknown",
                 "is_auto_generated": False,
-                "error": "This video doesn't have subtitles or transcripts available",
+                "duration_seconds": 0,
+                "error": "Failed to retrieve transcript. YouTube may be blocking this video.",
             }
         except Exception as e:
+            error_str = str(e).lower()
+            if "sign in" in error_str or "bot" in error_str:
+                return {
+                    "text": "",
+                    "language": "unknown",
+                    "is_auto_generated": False,
+                    "duration_seconds": 0,
+                    "error": "YouTube is blocking requests. Please try again later.",
+                }
             logger.error(f"Transcript extraction error: {e}")
             return {
                 "text": "",
                 "language": "unknown",
                 "is_auto_generated": False,
+                "duration_seconds": 0,
                 "error": f"Failed to extract transcript: {str(e)}",
             }
 
@@ -206,8 +223,6 @@ class YouTubeSummarizer:
         """
         if not transcript:
             return ""
-
-        import re
 
         text = transcript
 
@@ -233,7 +248,6 @@ class YouTubeSummarizer:
         text = re.sub(r"\s+", " ", text)
 
         # Step 4: Add basic punctuation where missing (simple heuristic)
-        # Add period if line ends with word and next starts with capital
         text = re.sub(r"(\w)$", r"\1.", text)
 
         return text.strip()
@@ -284,3 +298,15 @@ class YouTubeSummarizer:
                 return match.group(1)
 
         raise ValueError(f"Could not extract video ID from URL: {url}")
+
+    def format_duration(self, seconds: int) -> str:
+        """Format seconds as HH:MM:SS or MM:SS."""
+        if seconds <= 0:
+            return "N/A"
+
+        hours, remainder = divmod(int(seconds), 3600)
+        minutes, secs = divmod(remainder, 60)
+
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
