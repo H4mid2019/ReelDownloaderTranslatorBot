@@ -1,5 +1,5 @@
 """
-Instagram post downloader using yt-dlp.
+Instagram post downloader using yt-dlp, instaloader, gallery-dl and Cobalt.
 Handles both images and videos from public Instagram posts.
 Requires Instagram session cookies for posts (images/carousels).
 """
@@ -20,7 +20,13 @@ if 'SSLKEYLOGFILE' not in os.environ:
 
 from dataclasses import dataclass, field
 import time
-from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID
+from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID, INSTAGRAM_USERNAME
+
+try:
+    import instaloader  # type: ignore[import-untyped]
+    _INSTALOADER_AVAILABLE = True
+except ImportError:
+    _INSTALOADER_AVAILABLE = False
 
 
 @dataclass
@@ -342,17 +348,20 @@ def download_instagram_post_gallery_dl(url: str, download_dir: str, cookies_path
                 break
     
     if not gallery_dl_bin:
-        gallery_dl_bin = "gallery-dl" # Last resort, attempt to use system PATH
+        gallery_dl_bin = "gallery-dl"  # Last resort, attempt to use system PATH
         
-    # gallery-dl -d download_dir --cookies cookies_path url
-    # Note: --write-metadata creates .json files with same name as media
-    cmd = [gallery_dl_bin, "--dest", download_dir, "--write-metadata"]
+    # Build gallery-dl command.
+    # --no-config: avoids any stale/misconfigured gallery-dl.conf on the server
+    # --write-metadata: creates .json files with caption/metadata
+    cmd = [gallery_dl_bin, "--no-config", "--dest", download_dir, "--write-metadata"]
     if cookies_path:
         cmd.extend(["--cookies", cookies_path])
     cmd.append(url)
     
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=60)
+        logger.debug(f"gallery-dl stdout: {result.stdout[:500]}")
+        
         # Scan for ANY media file downloaded
         captured_caption = None
         
@@ -397,10 +406,131 @@ def download_instagram_post_gallery_dl(url: str, download_dir: str, cookies_path
                 caption=captured_caption,
                 error=None
             )
+    except subprocess.CalledProcessError as e:
+        stderr_snippet = (e.stderr or '')[:300]
+        logger.error(f"gallery-dl failed (exit {e.returncode}): {stderr_snippet}")
     except Exception as e:
-        logger.error(f"gallery-dl failed: {e}")
+        logger.error(f"gallery-dl exception: {e}")
         
     return MediaResult(post_url=url, platform='instagram', error="gallery-dl fallback failed")
+
+
+def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaResult:
+    """
+    Fallback using instaloader Python library — authenticates directly with
+    INSTAGRAM_SESSION_ID without relying on the CLI pipeline that gallery-dl uses.
+    Works by injecting the session cookie directly into instaloader's request session.
+    """
+    if not _INSTALOADER_AVAILABLE:
+        return MediaResult(post_url=url, platform='instagram', error="instaloader not installed")
+    if not INSTAGRAM_SESSION_ID:
+        return MediaResult(post_url=url, platform='instagram', error="INSTAGRAM_SESSION_ID not configured")
+
+    logger = logging.getLogger(__name__)
+    logger.info(f"Attempting instaloader for: {url}")
+
+    try:
+        # Extract shortcode from URL  (e.g. DWiiZ4bN52Y)
+        m = re.search(r'/(reel|reels|p|tv)/([\w-]+)', url)
+        if not m:
+            return MediaResult(post_url=url, platform='instagram', error="Cannot parse shortcode from URL")
+        shortcode = m.group(2)
+
+        # Build an Instaloader instance and inject our session ID as a cookie
+        L = instaloader.Instaloader(
+            download_videos=True,
+            download_video_thumbnails=False,
+            download_geotags=False,
+            download_comments=False,
+            save_metadata=False,
+            compress_json=False,
+            quiet=True,
+        )
+        # Inject session cookie (this avoids the full login flow)
+        expiry = int(time.time()) + 60 * 60 * 24 * 365
+        import requests  # instaloader uses requests under the hood
+        cookie = requests.cookies.create_cookie(
+            name='sessionid',
+            value=INSTAGRAM_SESSION_ID,
+            domain='.instagram.com',
+            path='/',
+            secure=True,
+            expires=expiry,
+        )
+        L.context._session.cookies.set_cookie(cookie)  # type: ignore[attr-defined]
+        # Signal to instaloader that we are logged in so it doesn't try anonymous access
+        L.context.username = INSTAGRAM_USERNAME or 'user'  # type: ignore[attr-defined]
+
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        caption = post.caption or ''
+
+        file_paths: List[str] = []
+        file_size_bytes = 0
+
+        if post.is_video:
+            # Download video directly via requests to avoid instaloader's file-naming
+            import urllib.request
+            video_url = post.video_url
+            out_path = os.path.join(download_dir, f"{shortcode}.mp4")
+            req = urllib.request.Request(video_url, headers={
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+                              'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                'Referer': 'https://www.instagram.com/',
+            })
+            with urllib.request.urlopen(req, timeout=60) as resp, open(out_path, 'wb') as f:
+                f.write(resp.read())
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                file_paths.append(out_path)
+                file_size_bytes = os.path.getsize(out_path)
+        else:
+            # Image or sidecar (carousel)
+            if post.typename == 'GraphSidecar':
+                for i, node in enumerate(post.get_sidecar_nodes()):
+                    import urllib.request
+                    img_url = node.video_url if node.is_video else node.display_url
+                    ext = '.mp4' if node.is_video else '.jpg'
+                    out_path = os.path.join(download_dir, f"{shortcode}_{i}{ext}")
+                    req = urllib.request.Request(img_url, headers={
+                        'User-Agent': 'Mozilla/5.0',
+                        'Referer': 'https://www.instagram.com/',
+                    })
+                    with urllib.request.urlopen(req, timeout=60) as resp, open(out_path, 'wb') as f:
+                        f.write(resp.read())
+                    if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                        file_paths.append(out_path)
+                        file_size_bytes += os.path.getsize(out_path)
+            else:
+                import urllib.request
+                img_url = post.url
+                out_path = os.path.join(download_dir, f"{shortcode}.jpg")
+                req = urllib.request.Request(img_url, headers={
+                    'User-Agent': 'Mozilla/5.0',
+                    'Referer': 'https://www.instagram.com/',
+                })
+                with urllib.request.urlopen(req, timeout=60) as resp, open(out_path, 'wb') as f:
+                    f.write(resp.read())
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                    file_paths.append(out_path)
+                    file_size_bytes = os.path.getsize(out_path)
+
+        if not file_paths:
+            return MediaResult(post_url=url, platform='instagram', error="instaloader: no files downloaded")
+
+        file_paths.sort()
+        has_video = any(p.endswith('.mp4') for p in file_paths)
+        return MediaResult(
+            post_url=url,
+            platform='instagram',
+            media_type='gallery' if len(file_paths) > 1 else ('video' if has_video else 'photo'),
+            file_path=file_paths[0],
+            file_paths=file_paths,
+            file_size_bytes=file_size_bytes,
+            caption=caption,
+            error=None,
+        )
+    except Exception as e:
+        logger.error(f"instaloader failed: {e}")
+        return MediaResult(post_url=url, platform='instagram', error=f"instaloader failed: {e}")
 
 
 def download_video(url: str) -> MediaResult:
@@ -468,7 +598,7 @@ def download_video(url: str) -> MediaResult:
         last_error = str(e)
         logger.warning(f"yt-dlp mobile failed: {last_error}")
 
-    # Method 3: Instagram-specific fallbacks (Cobalt -> gallery-dl)
+    # Method 3: Instagram-specific fallbacks (Cobalt -> instaloader -> gallery-dl)
     if platform == 'instagram':
         logger.info("yt-dlp failed for Instagram, trying Cobalt fallback...")
         res = download_instagram_post_cobalt(url, download_dir)
@@ -476,7 +606,14 @@ def download_video(url: str) -> MediaResult:
             _cleanup_temp_cookie(cookies_path)
             return res
         
-        logger.info("Cobalt failed, trying gallery-dl fallback...")
+        logger.info("Cobalt failed, trying instaloader fallback...")
+        res = download_instagram_post_instaloader(url, download_dir)
+        if not res.error:
+            _cleanup_temp_cookie(cookies_path)
+            return res
+        logger.warning(f"instaloader failed: {res.error}")
+
+        logger.info("instaloader failed, trying gallery-dl fallback...")
         res = download_instagram_post_gallery_dl(url, download_dir, cookies_path)
         if not res.error:
             _cleanup_temp_cookie(cookies_path)
@@ -577,9 +714,4 @@ def download_video(url: str) -> MediaResult:
         post_url=url,
         platform=platform,
         error=f"Download failed after trying all methods. Error: {last_error}"
-    )
-    return MediaResult(
-        post_url=url,
-        platform=platform,
-        error="Unable to download video."
     )
