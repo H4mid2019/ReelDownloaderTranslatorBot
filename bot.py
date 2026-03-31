@@ -18,11 +18,16 @@ from telegram.ext import (
 )
 
 from config import TELEGRAM_BOT_TOKEN, MAX_VIDEO_SIZE_MB, MAX_VIDEO_SIZE_BYTES, LOG_LEVEL, USE_LOCAL_AI
+from config import ENABLE_AI_CACHE, CACHE_TTL_DAYS, CACHE_DB_PATH
+from cache import AICache, extract_post_id
 from downloader import download_video, detect_platform
 from transcriber import Transcriber
 from translator import Translator
 from truth_monitor import monitor_loop
 from typing import Optional
+
+# ── Global AI cache (None when ENABLE_AI_CACHE=false) ───────────────────────
+_cache: Optional[AICache] = AICache(CACHE_DB_PATH, CACHE_TTL_DAYS) if ENABLE_AI_CACHE else None
 
 # Enable logging
 logging.basicConfig(
@@ -46,6 +51,16 @@ VIDEO_CHUNK_SIZE_BYTES = 30 * 1024 * 1024
 
 async def post_init(application: Application):
     """Start background tasks after bot initialization."""
+    # Purge expired cache entries at startup
+    if _cache:
+        removed = _cache.purge_expired()
+        if removed:
+            logger.info(f"AI cache: purged {removed} expired entries at startup")
+        stats = _cache.stats()
+        logger.info(
+            f"AI cache ready — valid={stats['valid']} entries, "
+            f"total_hits={stats['total_hits']}, db={CACHE_DB_PATH}"
+        )
     task = asyncio.create_task(monitor_loop(application))
     application.bot_data["truth_monitor_task"] = task
 
@@ -114,6 +129,26 @@ async def chatid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• **Type:** {chat_type}\n"
         f"• **Title:** {chat_title}\n\n"
         f"You can copy the ID above and paste it into your configuration."
+    )
+
+
+async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /clearcache command — wipes all AI cache entries."""
+    if not update.message:
+        return
+    if not _cache:
+        await update.message.reply_text(
+            "ℹ️ AI cache is **disabled** (`ENABLE_AI_CACHE=false` in config)."
+        )
+        return
+
+    stats_before = _cache.stats()
+    removed = _cache.clear_all()
+    await update.message.reply_text(
+        f"🗑️ **AI Cache Cleared**\n"
+        f"• Removed **{removed}** entries\n"
+        f"• Previous total hits: **{stats_before['total_hits']}**\n\n"
+        f"Cache will rebuild automatically as new content is processed."
     )
 
 
@@ -398,7 +433,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             await status_msg.edit_text(f"❌ Download failed: {result.error}")
             return
 
-        # Translate post text if necessary
+            # Translate post text if necessary
         translated_caption = None
         text_to_translate = result.caption if result.media_type != 'text' else result.tweet_text
         if text_to_translate and text_to_translate.strip():
@@ -406,7 +441,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 if status_msg:
                     await status_msg.edit_text("🌐 Checking language & translating text...")
                 trans = Translator()
-                t_res = trans.process_transcript(text_to_translate[:1000], use_local_ai=use_local_ai)
+                t_res = trans.process_transcript(text_to_translate[:1000], use_local_ai=use_local_ai, ai_cache=_cache)
                 logger.info(f"Caption lang detection: is_english={t_res.get('is_english')}, has_translation={bool(t_res.get('english_translation'))}, error={t_res.get('error')}")
                 # Accept translation even if there was a minor detection error
                 if t_res.get('english_translation'):
@@ -560,16 +595,36 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
         # ── Handle VIDEO ───────────────────────────────────────────────────────
         if result.media_type == 'video':
 
-            # ── STEP 1: Transcribe first (just to detect language) ─────────────
-            # We need language detection before sending so we can caption correctly.
-            # For Persian, we skip transcription entirely AFTER detecting language.
-            await status_msg.edit_text(
-                f"📹 Video downloaded ({file_size_mb:.2f} MB)\n"
-                "🔍 Detecting language..."
-            )
+            # ── STEP 1: Check transcript cache first ──────────────────────────
+            post_id_tuple = extract_post_id(url)
+            transcript_result = None
 
-            transcriber = Transcriber()
-            transcript_result = transcriber.transcribe_video(result.file_path, use_local_ai=use_local_ai)
+            if _cache and post_id_tuple:
+                t_cache_key = f"transcript:{post_id_tuple[0]}:{post_id_tuple[1]}"
+                cached_transcript = _cache.get(t_cache_key)
+                if cached_transcript is not None:
+                    logger.info(f"Cache HIT (transcript): {t_cache_key}")
+                    transcript_result = cached_transcript
+                    await status_msg.edit_text(
+                        f"📹 Video downloaded ({file_size_mb:.2f} MB)\n"
+                        "⚡ Using cached transcript..."
+                    )
+
+            if transcript_result is None:
+                # ── STEP 1b: Transcribe via API ─────────────────────────────
+                await status_msg.edit_text(
+                    f"📹 Video downloaded ({file_size_mb:.2f} MB)\n"
+                    "🔍 Detecting language..."
+                )
+
+                transcriber = Transcriber()
+                transcript_result = transcriber.transcribe_video(result.file_path, use_local_ai=use_local_ai)
+
+                # Store in cache if successful (no error, not a skipped Persian)
+                if _cache and post_id_tuple and not transcript_result.get('error'):
+                    t_cache_key = f"transcript:{post_id_tuple[0]}:{post_id_tuple[1]}"
+                    _cache.set(t_cache_key, transcript_result)
+                    logger.info(f"Cache SET (transcript): {t_cache_key}")
 
             if transcript_result['error'] and not transcript_result.get('skipped'):
                 # Transcription/detection actually failed (not just skipped for Persian)
@@ -687,7 +742,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                         pass
 
                 translator = Translator()
-                processed = translator.process_transcript(transcript, hint_language=detected_lang, use_local_ai=use_local_ai)
+                processed = translator.process_transcript(transcript, hint_language=detected_lang, use_local_ai=use_local_ai, ai_cache=_cache)
 
             # ── STEP 6: Build and send response message ────────────────────────
             detection_note = "(auto-detected)" if auto_detected else "(user specified)"
@@ -800,6 +855,7 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("chatid", chatid_command))
+    application.add_handler(CommandHandler("clearcache", clearcache_command))
     application.add_handler(CommandHandler("d", download_command))
     application.add_handler(CommandHandler("dl", download_local_command))
 

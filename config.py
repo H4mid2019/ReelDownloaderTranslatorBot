@@ -49,3 +49,8 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 # Size limits
 MAX_VIDEO_SIZE_MB = 45
 MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
+
+# AI result cache — stores transcripts & translations in SQLite to avoid duplicate API calls
+ENABLE_AI_CACHE = os.getenv("ENABLE_AI_CACHE", "true").lower() in ("true", "1", "yes")
+CACHE_TTL_DAYS  = int(os.getenv("CACHE_TTL_DAYS", "30"))
+CACHE_DB_PATH   = os.getenv("CACHE_DB_PATH", "./ai_cache.db")

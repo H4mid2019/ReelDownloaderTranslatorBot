@@ -10,7 +10,9 @@ from config import (
     GEMINI_API_KEY, GOOGLE_AI_MODEL,
 )
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from cache import AICache
 
 
 class Translator:
@@ -142,14 +144,16 @@ Provide ONLY the English translation, nothing else."""
                 'error': f"Google AI translation error: {str(e)}"
             }
 
-    def translate_to_english(self, text: str, source_language: str = "unknown", use_local_ai: bool = False) -> dict:
+    def translate_to_english(self, text: str, source_language: str = "unknown", use_local_ai: bool = False, ai_cache: Optional["AICache"] = None) -> dict:
         """
         Translate text to English.
-        
+
         Args:
             text: Text to translate
             source_language: Name of the source language (for better translation)
-        
+            use_local_ai: If True, use Google AI Studio instead of Groq
+            ai_cache: Optional AICache instance for caching results
+
         Returns:
             dict with 'translation', 'error'
         """
@@ -158,6 +162,18 @@ Provide ONLY the English translation, nothing else."""
                 'translation': '',
                 'error': 'No text provided for translation'
             }
+
+        # ── Cache check ────────────────────────────────────────────────────────
+        cache_key = None
+        if ai_cache is not None:
+            from cache import make_text_hash
+            text_hash = make_text_hash(text)
+            cache_key = f"translation:{text_hash}:{source_language.lower()}"
+            cached = ai_cache.get(cache_key)
+            if cached is not None:
+                import logging
+                logging.getLogger(__name__).info(f"Cache HIT (translation): {cache_key}")
+                return cached
         
         prompt = f"""Translate the following text to English.
 Source language: {source_language}
@@ -174,7 +190,7 @@ Provide ONLY the English translation, nothing else."""
         try:
             if use_local_ai:
                 # /dl command — use Google AI Studio
-                return self._translate_with_google(text, source_language)
+                result = self._translate_with_google(text, source_language)
             else:
                 # /d command — use Groq LLM (unchanged)
                 response = self.client.chat.completions.create(
@@ -186,14 +202,15 @@ Provide ONLY the English translation, nothing else."""
                     temperature=0.3,
                     max_tokens=2000
                 )
-            
-            translation = response.choices[0].message.content.strip()
-            
-            return {
-                'translation': translation,
-                'error': None
-            }
-            
+                translation = response.choices[0].message.content.strip()
+                result = {'translation': translation, 'error': None}
+
+            # ── Store in cache ────────────────────────────────────────────────
+            if ai_cache is not None and cache_key and result.get('translation') and not result.get('error'):
+                ai_cache.set(cache_key, result)
+
+            return result
+
         except groq.RateLimitError:
             return {
                 'translation': '',
@@ -205,14 +222,16 @@ Provide ONLY the English translation, nothing else."""
                 'error': f"Translation error: {str(e)}"
             }
     
-    def process_transcript(self, transcript: str, hint_language: Optional[str] = None, use_local_ai: bool = False) -> dict:
+    def process_transcript(self, transcript: str, hint_language: Optional[str] = None, use_local_ai: bool = False, ai_cache: Optional["AICache"] = None) -> dict:
         """
         Process a transcript: detect language and translate to English if needed.
-        
+
         Args:
             transcript: The transcribed text
             hint_language: Optional language code from Whisper
-        
+            use_local_ai: If True, use Google AI Studio for translation
+            ai_cache: Optional AICache instance for caching results
+
         Returns:
             dict with all relevant information
         """
@@ -225,11 +244,11 @@ Provide ONLY the English translation, nothing else."""
             'english_translation': None,
             'error': None
         }
-        
+
         if not transcript or not transcript.strip():
             result['error'] = 'Empty transcript'
             return result
-        
+
         # Use hint from Whisper if available
         if hint_language:
             result['detected_language'] = hint_language.lower()
@@ -245,13 +264,14 @@ Provide ONLY the English translation, nothing else."""
             result['is_persian'] = detection['language'] == 'fa'
             if detection['error']:
                 result['error'] = detection['error']
-        
+
         # If not English and not Persian, translate to English
         if not result['is_english'] and not result['is_persian']:
             translation_result = self.translate_to_english(
-                transcript, 
+                transcript,
                 str(result['detected_language_name'] or "unknown"),
-                use_local_ai
+                use_local_ai,
+                ai_cache=ai_cache,
             )
             result['english_translation'] = translation_result['translation']
             if translation_result['error']:
@@ -259,7 +279,7 @@ Provide ONLY the English translation, nothing else."""
         else:
             # English - no translation needed
             result['english_translation'] = None
-        
+
         return result
 
 
