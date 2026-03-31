@@ -652,12 +652,29 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                         pass
                 google_trans = transcript_result.get('google_translation')  # None if English
                 is_english = (detected_lang or '').lower() in Translator.ENGLISH_CODES
+                is_persian = (detected_lang or '').lower() == 'fa'
+
+                # Safety fallback: if Gemini didn't return a translation for a
+                # non-English, non-Persian language, call Google AI separately
+                if not is_english and not is_persian and not google_trans and transcript:
+                    logger.warning(f"Gemini returned no translation for {detected_lang_name}, calling translator as fallback")
+                    if status_msg:
+                        try:
+                            await status_msg.edit_text("🌐 Fetching translation (Google AI)...")
+                        except Exception:
+                            pass
+                    fallback_translator = Translator()
+                    fb = fallback_translator.translate_to_english(
+                        transcript, detected_lang_name or "unknown", use_local_ai=True
+                    )
+                    google_trans = fb.get('translation') or None
+
                 processed = {
                     'original_transcript': transcript,
                     'detected_language': detected_lang,
                     'detected_language_name': detected_lang_name,
                     'is_english': is_english,
-                    'is_persian': (detected_lang or '').lower() == 'fa',
+                    'is_persian': is_persian,
                     'english_translation': google_trans,
                     'error': None,
                 }

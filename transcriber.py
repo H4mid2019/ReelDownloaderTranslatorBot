@@ -148,22 +148,23 @@ class Transcriber:
                 waited += 2
                 uploaded_file = client.files.get(name=uploaded_file.name)
 
-            # Single prompt: detect language + transcribe + translate
+            # Single prompt: detect language + transcribe + translate (all in one)
             prompt = (
-                "Listen to this audio carefully. "
-                "Return a JSON object with EXACTLY these fields:\n"
+                "Listen to this audio carefully and return a JSON object with EXACTLY these fields:\n"
                 "{\n"
-                '  "language_code": "ISO 639-1 code (e.g. en, fa, ar, es, ru, tr)",\n'
+                '  "language_code": "ISO 639-1 code (e.g. en, fa, ar, es, ru, bg, tr)",\n'
                 '  "language_name": "Full language name in English",\n'
-                '  "transcript": "Full verbatim transcript of the speech",\n'
-                '  "translation": "English translation of the transcript, '
-                'or null if the speech is already in English or Persian/Farsi"\n'
+                '  "transcript": "Full verbatim transcript of the speech in the original language",\n'
+                '  "translation": "Complete English translation of the transcript. '
+                'If the speech is already in English, copy the transcript here as-is. '
+                'If the speech is in Persian/Farsi, set this to an empty string."\n'
                 "}\n"
                 "Rules:\n"
-                "- If speech is Persian/Farsi: set language_code to \"fa\", "
-                "set transcript to empty string \"\", set translation to null\n"
-                "- If speech is English: set translation to null\n"
-                "- Return ONLY the JSON object. No markdown, no explanation."
+                "- ALWAYS populate the translation field (never return null)\n"
+                "- If speech is Persian/Farsi: set language_code to \"fa\", set transcript to \"\", set translation to \"\"\n"
+                "- If speech is English: set translation to be the same as the transcript\n"
+                "- For all other languages: provide a full, natural English translation\n"
+                "- Return ONLY the JSON object. No markdown fences, no extra text."
             )
 
             response = client.models.generate_content(
@@ -182,9 +183,19 @@ class Transcriber:
                 or self.LANGUAGE_NAMES.get(lang_code, lang_code.title())
             )
             transcript = (data.get('transcript') or '').strip()
-            translation = data.get('translation')  # None when English or Persian
+            raw_translation = (data.get('translation') or '').strip()
 
             is_excluded = lang_code in self.EXCLUDED_LANGUAGES
+            is_english = lang_code in ('en', 'eng', 'english')
+
+            # Determine final translation value:
+            # - English: no translation needed (translation == transcript)
+            # - Persian: skip entirely
+            # - Other: use what Gemini returned; if empty, mark as needing fallback
+            if is_excluded or is_english:
+                translation = None
+            else:
+                translation = raw_translation if raw_translation else None
 
             return {
                 'text': transcript,
@@ -192,7 +203,7 @@ class Transcriber:
                 'language_name': lang_name,
                 'skipped': is_excluded,
                 'auto_detected': True,
-                'google_translation': translation if not is_excluded else None,
+                'google_translation': translation,
                 'google_translation_handled': True,
                 'error': (
                     None if not is_excluded
