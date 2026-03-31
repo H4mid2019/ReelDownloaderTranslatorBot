@@ -1,13 +1,14 @@
 """
-Language detection and translation using Groq LLM API.
+Language detection and translation using Groq LLM API (primary, /d command).
+Google AI Studio OpenAI-compatible API (fallback, /dl command).
 Handles translation of any non-English language to English.
 """
 import groq
-try:
-    import openai
-except ImportError:
-    openai = None
-from config import GROQ_API_KEY, TRANSLATION_MODEL, LOCAL_LLM_URL, LOCAL_LLM_MODEL
+import openai
+from config import (
+    GROQ_API_KEY, TRANSLATION_MODEL,
+    GEMINI_API_KEY, GOOGLE_AI_MODEL,
+)
 
 from typing import Optional
 
@@ -21,8 +22,11 @@ class Translator:
     def __init__(self):
         self.client = groq.Groq(api_key=GROQ_API_KEY)
         self.model = TRANSLATION_MODEL
-        self.local_client = openai.OpenAI(base_url=LOCAL_LLM_URL, api_key="local") if openai else None
-        self.local_model = LOCAL_LLM_MODEL
+        # Google AI Studio client (OpenAI-compatible endpoint)
+        self._google_client = openai.OpenAI(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=GEMINI_API_KEY or "unset",
+        )
     
     def detect_language(self, text: str, use_local_ai: bool = False) -> dict:
         """
@@ -94,6 +98,50 @@ class Translator:
                 'error': f"Language detection error: {str(e)}"
             }
     
+    def _translate_with_google(self, text: str, source_language: str) -> dict:
+        """
+        Translate text to English using Google AI Studio (OpenAI-compatible endpoint).
+        Used by /dl command when use_local_ai=True.
+        """
+        if not GEMINI_API_KEY:
+            return {
+                'translation': '',
+                'error': 'GEMINI_API_KEY not configured in .env'
+            }
+
+        prompt = f"""Translate the following text to English.
+Source language: {source_language}
+
+Maintain the meaning, tone, and style of the original.
+If there are names, keep them as is.
+If there are phrases that don't translate directly, provide a natural English equivalent.
+
+Text to translate:
+\"\"\"{text}\"\"\"
+
+Provide ONLY the English translation, nothing else."""
+
+        try:
+            response = self._google_client.chat.completions.create(
+                model=GOOGLE_AI_MODEL,
+                messages=[
+                    {"role": "system", "content": f"You are a professional translator. Translate {source_language} to English accurately."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=2000
+            )
+            translation = response.choices[0].message.content.strip()
+            return {
+                'translation': translation,
+                'error': None
+            }
+        except Exception as e:
+            return {
+                'translation': '',
+                'error': f"Google AI translation error: {str(e)}"
+            }
+
     def translate_to_english(self, text: str, source_language: str = "unknown", use_local_ai: bool = False) -> dict:
         """
         Translate text to English.
@@ -124,17 +172,11 @@ Text to translate:
 Provide ONLY the English translation, nothing else."""
 
         try:
-            if use_local_ai and self.local_client:
-                response = self.local_client.chat.completions.create(
-                    model=self.local_model,
-                    messages=[
-                        {"role": "system", "content": f"You are a professional translator. Translate {source_language} to English accurately."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.3,
-                    max_tokens=2000
-                )
+            if use_local_ai:
+                # /dl command — use Google AI Studio
+                return self._translate_with_google(text, source_language)
             else:
+                # /d command — use Groq LLM (unchanged)
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[

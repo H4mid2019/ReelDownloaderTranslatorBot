@@ -641,15 +641,36 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 cleanup_file(result.file_path)
                 return
 
-            # ── STEP 5: Translate if needed ────────────────────────────────────
-            if status_msg:
-                try:
-                    await status_msg.edit_text("🌐 Translating transcript...")
-                except Exception:
-                    pass
+            # ── STEP 5: Build transcript result ────────────────────────────────
+            # If /dl was used, Gemini already transcribed + translated in one call.
+            # Reuse that result instead of making a second API call.
+            if use_local_ai and transcript_result.get('google_translation_handled'):
+                if status_msg:
+                    try:
+                        await status_msg.edit_text("✅ Gemini processed transcript & translation!")
+                    except Exception:
+                        pass
+                google_trans = transcript_result.get('google_translation')  # None if English
+                is_english = (detected_lang or '').lower() in Translator.ENGLISH_CODES
+                processed = {
+                    'original_transcript': transcript,
+                    'detected_language': detected_lang,
+                    'detected_language_name': detected_lang_name,
+                    'is_english': is_english,
+                    'is_persian': (detected_lang or '').lower() == 'fa',
+                    'english_translation': google_trans,
+                    'error': None,
+                }
+            else:
+                # ── STEP 5 (fallback): Translate with Groq if needed ───────────────
+                if status_msg:
+                    try:
+                        await status_msg.edit_text("🌐 Translating transcript...")
+                    except Exception:
+                        pass
 
-            translator = Translator()
-            processed = translator.process_transcript(transcript, hint_language=detected_lang, use_local_ai=use_local_ai)
+                translator = Translator()
+                processed = translator.process_transcript(transcript, hint_language=detected_lang, use_local_ai=use_local_ai)
 
             # ── STEP 6: Build and send response message ────────────────────────
             detection_note = "(auto-detected)" if auto_detected else "(user specified)"

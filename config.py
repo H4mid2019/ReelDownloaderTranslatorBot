@@ -9,6 +9,10 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
+# Google AI Studio (Gemini) — used by /dl command fallback
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_AI_MODEL = os.getenv("GOOGLE_AI_MODEL", "gemini-2.5-flash-lite")
+
 # Truth Social configuration
 TRUTH_ALERT_CHAT_ID = os.getenv("TRUTH_ALERT_CHAT_ID")
 TRUTH_RSS_URL = os.getenv("TRUTH_RSS_URL", "https://trumpstruth.org/feed")
@@ -30,8 +34,10 @@ INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3")
 TRANSLATION_MODEL = os.getenv("TRANSLATION_MODEL", "llama-3.3-70b-versatile")
 
-# Local AI Fallback configurations
+# Google AI Fallback flag — enables the /dl command (was previously local AI)
 USE_LOCAL_AI = os.getenv("USE_LOCAL_AI", "False").lower() in ("true", "1", "yes")
+
+# Legacy local AI settings (kept for reference, no longer used by /dl)
 LOCAL_STT_URL = os.getenv("LOCAL_STT_URL", "http://localhost:8000/v1")
 LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL", "http://localhost:11434/v1")
 LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "base")
