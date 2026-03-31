@@ -24,7 +24,6 @@ from config import (
     MAX_VIDEO_SIZE_BYTES,
     LOG_LEVEL,
     USE_LOCAL_AI,
-    YOUTUBE_MAX_DURATION_SECONDS,
 )
 from config import ENABLE_AI_CACHE, CACHE_TTL_DAYS, CACHE_DB_PATH
 from cache import AICache, extract_post_id
@@ -474,16 +473,6 @@ async def process_youtube_url(
         return
 
     video_id = meta.get("video_id")
-    duration = meta.get("duration", 0)
-    max_duration = YOUTUBE_MAX_DURATION_SECONDS
-
-    if duration > max_duration:
-        hours = max_duration // 3600
-        await status_msg.edit_text(
-            f"❌ Video exceeds {hours}-hour limit.\n"
-            f"Current duration: {meta.get('duration_formatted', 'N/A')}"
-        )
-        return
 
     # 2. Check if already being processed (soft lock)
     cache_key = f"summary:youtube:{video_id}"
