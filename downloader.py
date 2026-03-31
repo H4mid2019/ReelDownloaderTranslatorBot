@@ -351,9 +351,9 @@ def download_instagram_post_gallery_dl(url: str, download_dir: str, cookies_path
         gallery_dl_bin = "gallery-dl"  # Last resort, attempt to use system PATH
         
     # Build gallery-dl command.
-    # --no-config: avoids any stale/misconfigured gallery-dl.conf on the server
     # --write-metadata: creates .json files with caption/metadata
-    cmd = [gallery_dl_bin, "--no-config", "--dest", download_dir, "--write-metadata"]
+    # Note: --no-config is NOT supported on older gallery-dl versions; omit it.
+    cmd = [gallery_dl_bin, "--dest", download_dir, "--write-metadata"]
     if cookies_path:
         cmd.extend(["--cookies", cookies_path])
     cmd.append(url)
