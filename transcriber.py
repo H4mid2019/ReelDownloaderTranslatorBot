@@ -132,7 +132,7 @@ class Transcriber:
 
             # Upload audio file to Google File API
             uploaded_file = client.files.upload(
-                path=audio_path,
+                file=audio_path,
                 config=google_types.UploadFileConfig(mime_type=mime_type)
             )
 
