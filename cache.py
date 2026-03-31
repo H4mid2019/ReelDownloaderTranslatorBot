@@ -7,6 +7,7 @@ SQLite-backed cache for AI results (transcripts, translations, caption translati
 - Cleanup                    : purge_expired() is called once at bot startup
 - Thread-safety              : SQLite WAL mode + check_same_thread=False
 """
+
 import hashlib
 import json
 import logging
@@ -20,12 +21,12 @@ logger = logging.getLogger(__name__)
 # ── URL pattern → (platform, post_id) extraction ──────────────────────────────
 
 _INSTAGRAM_RE = re.compile(
-    r'(?:instagram\.com|instagr\.am)/(?:reel|reels|p|tv)/([\w-]+)',
-    re.IGNORECASE
+    r"(?:instagram\.com|instagr\.am)/(?:reel|reels|p|tv)/([\w-]+)", re.IGNORECASE
 )
-_TWITTER_RE = re.compile(
-    r'(?:twitter\.com|x\.com)/\w+/status/(\d+)',
-    re.IGNORECASE
+_TWITTER_RE = re.compile(r"(?:twitter\.com|x\.com)/\w+/status/(\d+)", re.IGNORECASE)
+_YOUTUBE_RE = re.compile(
+    r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([\w-]+)",
+    re.IGNORECASE,
 )
 
 
@@ -36,6 +37,7 @@ def extract_post_id(url: str) -> Optional[tuple[str, str]]:
     Returns:
         ("instagram", "ABC123xyz") for Instagram posts/reels
         ("twitter",   "1234567890") for Twitter/X statuses
+        ("youtube",   "dQw4w9WgXcQ") for YouTube videos
         None if URL is not recognized
     """
     m = _INSTAGRAM_RE.search(url)
@@ -44,12 +46,17 @@ def extract_post_id(url: str) -> Optional[tuple[str, str]]:
     m = _TWITTER_RE.search(url)
     if m:
         return ("twitter", m.group(1))
+    m = _YOUTUBE_RE.search(url)
+    if m:
+        return ("youtube", m.group(1))
     return None
 
 
 def make_text_hash(text: str) -> str:
     """Return a 16-char hex prefix of the SHA-256 hash of the first 2000 chars of text."""
-    return hashlib.sha256(text[:2000].encode("utf-8", errors="replace")).hexdigest()[:16]
+    return hashlib.sha256(text[:2000].encode("utf-8", errors="replace")).hexdigest()[
+        :16
+    ]
 
 
 # ── SQLite cache class ─────────────────────────────────────────────────────────
@@ -100,7 +107,7 @@ class AICache:
         cutoff = time.time() - self.ttl_seconds
         row = self._conn.execute(
             "SELECT value FROM ai_cache WHERE key = ? AND created_at >= ?",
-            (key, cutoff)
+            (key, cutoff),
         ).fetchone()
 
         if row is None:
@@ -126,7 +133,7 @@ class AICache:
         try:
             self._conn.execute(
                 "INSERT OR REPLACE INTO ai_cache (key, value, created_at, hits) VALUES (?, ?, ?, 0)",
-                (key, json.dumps(value, ensure_ascii=False), time.time())
+                (key, json.dumps(value, ensure_ascii=False), time.time()),
             )
             self._conn.commit()
         except Exception as e:
@@ -138,13 +145,13 @@ class AICache:
         Returns the number of rows deleted.
         """
         cutoff = time.time() - self.ttl_seconds
-        cur = self._conn.execute(
-            "DELETE FROM ai_cache WHERE created_at < ?", (cutoff,)
-        )
+        cur = self._conn.execute("DELETE FROM ai_cache WHERE created_at < ?", (cutoff,))
         self._conn.commit()
         removed = cur.rowcount
         if removed:
-            logger.info(f"AICache: purged {removed} expired entries (TTL={self.ttl_seconds//86400}d)")
+            logger.info(
+                f"AICache: purged {removed} expired entries (TTL={self.ttl_seconds // 86400}d)"
+            )
         return removed
 
     def clear_all(self) -> int:

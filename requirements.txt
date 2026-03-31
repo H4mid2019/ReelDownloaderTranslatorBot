@@ -10,3 +10,4 @@ openai==2.30.0
 langdetect==1.0.9
 instaloader>=4.13
 google-genai>=1.10.0
+youtube-transcript-api>=0.6.0

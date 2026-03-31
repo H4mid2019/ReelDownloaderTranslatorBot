@@ -1,6 +1,7 @@
 """
 Load environment variables from .env file.
 """
+
 import os
 from dotenv import load_dotenv
 
@@ -43,6 +44,10 @@ LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL", "http://localhost:11434/v1")
 LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "base")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b")
 
+# YouTube Summarization settings
+YOUTUBE_SUMMARY_MODEL = os.getenv("YOUTUBE_SUMMARY_MODEL", "gemini-2.0-flash")
+YOUTUBE_MAX_DURATION_SECONDS = int(os.getenv("YOUTUBE_MAX_DURATION_SECONDS", "7200"))
+
 # Logging configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -52,5 +57,5 @@ MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
 
 # AI result cache — stores transcripts & translations in SQLite to avoid duplicate API calls
 ENABLE_AI_CACHE = os.getenv("ENABLE_AI_CACHE", "true").lower() in ("true", "1", "yes")
-CACHE_TTL_DAYS  = int(os.getenv("CACHE_TTL_DAYS", "30"))
-CACHE_DB_PATH   = os.getenv("CACHE_DB_PATH", "./ai_cache.db")
+CACHE_TTL_DAYS = int(os.getenv("CACHE_TTL_DAYS", "30"))
+CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", "./ai_cache.db")
