@@ -423,8 +423,9 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
     """
     if not _INSTALOADER_AVAILABLE:
         return MediaResult(post_url=url, platform='instagram', error="instaloader not installed")
-    if not INSTAGRAM_SESSION_ID:
-        return MediaResult(post_url=url, platform='instagram', error="INSTAGRAM_SESSION_ID not configured")
+    has_cookies_file = bool(INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE))
+    if not INSTAGRAM_SESSION_ID and not has_cookies_file:
+        return MediaResult(post_url=url, platform='instagram', error="INSTAGRAM_SESSION_ID or INSTAGRAM_COOKIES_FILE not configured")
 
     logger = logging.getLogger(__name__)
     logger.info(f"Attempting instaloader for: {url}")
@@ -436,7 +437,7 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
             return MediaResult(post_url=url, platform='instagram', error="Cannot parse shortcode from URL")
         shortcode = m.group(2)
 
-        # Build an Instaloader instance and inject our session ID as a cookie
+        # Build an Instaloader instance and inject our session cookies
         L = instaloader.Instaloader(
             download_videos=True,
             download_video_thumbnails=False,
@@ -446,19 +447,34 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
             compress_json=False,
             quiet=True,
         )
-        # Inject session cookie (this avoids the full login flow)
-        expiry = int(time.time()) + 60 * 60 * 24 * 365
         import requests  # instaloader uses requests under the hood
-        cookie = requests.cookies.create_cookie(
-            name='sessionid',
-            value=INSTAGRAM_SESSION_ID,
-            domain='.instagram.com',
-            path='/',
-            secure=True,
-            expires=expiry,
-        )
-        L.context._session.cookies.set_cookie(cookie)  # type: ignore[attr-defined]
-        # Signal to instaloader that we are logged in so it doesn't try anonymous access
+        expiry = int(time.time()) + 60 * 60 * 24 * 365
+
+        # Prefer full cookies file (all cookies = less 403s from Instagram)
+        cookies_file = INSTAGRAM_COOKIES_FILE if (INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE)) else None
+        if cookies_file:
+            # Load Netscape cookies file into the requests session
+            from http.cookiejar import MozillaCookieJar
+            jar = MozillaCookieJar(cookies_file)
+            jar.load(ignore_discard=True, ignore_expires=True)
+            for c in jar:
+                L.context._session.cookies.set(c.name, c.value, domain=c.domain, path=c.path)  # type: ignore[attr-defined]
+            logger.debug(f"instaloader: loaded {len(list(jar))} cookies from {cookies_file}")
+        else:
+            # Fallback: inject session ID cookie only
+            if not INSTAGRAM_SESSION_ID:
+                return MediaResult(post_url=url, platform='instagram', error="No cookies configured (set INSTAGRAM_COOKIES_FILE or INSTAGRAM_SESSION_ID)")
+            cookie = requests.cookies.create_cookie(
+                name='sessionid',
+                value=INSTAGRAM_SESSION_ID,
+                domain='.instagram.com',
+                path='/',
+                secure=True,
+                expires=expiry,
+            )
+            L.context._session.cookies.set_cookie(cookie)  # type: ignore[attr-defined]
+
+        # Signal to instaloader that we are logged in so it skips anonymous-only paths
         L.context.username = INSTAGRAM_USERNAME or 'user'  # type: ignore[attr-defined]
 
         post = instaloader.Post.from_shortcode(L.context, shortcode)
