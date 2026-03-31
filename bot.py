@@ -562,9 +562,7 @@ async def send_youtube_summary(
     duration = meta.get("duration_formatted", "N/A")
     url = meta.get("url", "")
 
-    brief = summary.get("brief", "")
-    highlights = summary.get("highlights", [])
-    takeaway = summary.get("takeaway", "")
+    summary_text = summary.get("summary_text", "")
     source_lang = summary.get("source_language", "en")
     transcript_quality = summary.get("transcript_quality", "unknown")
 
@@ -607,19 +605,9 @@ async def send_youtube_summary(
     quality_icon = quality_emoji.get(transcript_quality, "❓")
     response += f"{quality_icon} {transcript_quality.replace('_', ' ').title()}\n"
 
-    response += "\n━━━━━━━━━━━━━━━━━━━━\n"
-    response += "📝 **BRIEF SUMMARY:**\n"
-    response += f"{brief}\n"
-
-    response += "\n━━━━━━━━━━━━━━━━━━━━\n"
-    response += "✨ **KEY HIGHLIGHTS:**\n"
-    for h in highlights:
-        response += f"• {h}\n"
-
-    response += "\n━━━━━━━━━━━━━━━━━━━━\n"
-    response += "🎯 **TAKEAWAY:**\n"
-    response += f"{takeaway}\n"
-    response += "━━━━━━━━━━━━━━━━━━━━"
+    response += "\n━━━━━━━━━━━━━━━━━━━━\n\n"
+    response += summary_text
+    response += "\n\n━━━━━━━━━━━━━━━━━━━━"
 
     # Delete status message
     if status_msg:
@@ -630,27 +618,12 @@ async def send_youtube_summary(
 
     # Split message if too long (Telegram ~4096 char limit)
     if len(response) > 4000:
-        # Send in parts
-        part1 = f"🎬 **{title}**\n⏱️ {duration}\n🔗 [YouTube]({url})\n\n━━━━━━━━━━━━━━━━━━━━\n📝 **BRIEF SUMMARY:**\n{brief[:3500]}"
-        await update.message.reply_text(part1, disable_web_page_preview=True)
-
-        remaining_brief = brief[3500:]
-        if remaining_brief:
-            await update.message.reply_text(remaining_brief)
-
-        highlights_text = "\n".join(f"• {h}" for h in highlights[:5])
-        await update.message.reply_text(
-            "━━━━━━━━━━━━━━━━━━━━\n✨ **KEY HIGHLIGHTS:**\n" + highlights_text
-        )
-
-        if len(highlights) > 5:
+        # Send in parts (chunking by paragraph if possible)
+        chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+        for i, chunk in enumerate(chunks):
             await update.message.reply_text(
-                "\n".join(f"• {h}" for h in highlights[5:])
+                chunk, disable_web_page_preview=(i == 0)
             )
-
-        await update.message.reply_text(
-            f"━━━━━━━━━━━━━━━━━━━━\n🎯 **TAKEAWAY:**\n{takeaway}\n━━━━━━━━━━━━━━━━━━━━"
-        )
     else:
         await update.message.reply_text(response, disable_web_page_preview=True)
 

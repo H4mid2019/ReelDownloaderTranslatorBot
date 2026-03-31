@@ -3,7 +3,6 @@ LLM-based text summarization for YouTube transcripts.
 Uses Google Gemini (AI Studio) for generating summaries.
 """
 
-import json
 import logging
 import openai
 
@@ -103,33 +102,13 @@ class Summarizer:
 
                 content = response.choices[0].message.content.strip()
 
-                # Parse JSON response
-                # Handle potential markdown code blocks
-                if content.startswith("```"):
-                    content = content.split("\n", 1)[1]
-                    content = content.rsplit("```", 1)[0]
-                    content = content.strip()
-
-                result = json.loads(content)
-
+                # Format is expected to be direct markdown text now based on updated prompt
                 return {
-                    "brief": result.get("brief", ""),
-                    "highlights": result.get("highlights", []),
-                    "takeaway": result.get("takeaway", ""),
+                    "summary_text": content,
                     "source_language": source_language,
                     "error": None,
                 }
 
-            except json.JSONDecodeError as e:
-                logger.warning(f"JSON parsing failed (attempt {attempt + 1}): {e}")
-                if attempt == max_retries - 1:
-                    return {
-                        "brief": "",
-                        "highlights": [],
-                        "takeaway": "",
-                        "source_language": source_language,
-                        "error": f"Failed to parse AI response: {str(e)}",
-                    }
             except Exception as e:
                 error_msg = str(e).lower()
                 if "rate" in error_msg or "429" in error_msg:
@@ -155,35 +134,37 @@ class Summarizer:
 
     def _build_english_prompt(self, transcript: str, title: str) -> str:
         """Build prompt for English transcripts."""
-        # Truncate transcript if too long (Gemini token limits)
+        # Truncate transcript if too long
         max_chars = 30000
         if len(transcript) > max_chars:
             transcript = transcript[:max_chars] + "\n\n[Transcript truncated due to length]"
 
-        return f"""You are an AI assistant that analyzes video transcripts and provides concise summaries.
-
+        return f"""
+You are an expert content analyst. Your task is to analyze the provided YouTube video transcript and extract the most valuable information.
 Video Title: "{title}"
 
-Given the following transcript, provide:
+CRITICAL INSTRUCTIONS:
+1. ONLY use the information provided in the <transcript> tags below. Do not hallucinate or add outside knowledge.
+2. You MUST format your response exactly according to the <output_template> provided.
 
-1. BRIEF SUMMARY (2-3 paragraphs):
-   A concise overview of the video's content and main topics.
+<output_template>
+### 📝 Brief Summary
+[Write 2-3 sentences summarizing the core topic.]
 
-2. KEY HIGHLIGHTS (5-7 bullet points):
-   The most important points, insights, or memorable moments.
+### 💡 Key Highlights
+* **[Concept]**: [Brief explanation]
+(Provide exactly 5 highlights)
 
-3. TAKEAWAY (1-2 sentences):
-   The main lesson, conclusion, or value the viewer should remember.
+### 🚀 Actionable Takeaways  
+* [Actionable step 1]
+* [Actionable step 2]
+* [Actionable step 3]
+</output_template>
 
-Transcript:
+<transcript>
 {transcript}
-
-Respond in the following JSON format only (no other text):
-{{
-  "brief": "...",
-  "highlights": ["...", "..."],
-  "takeaway": "..."
-}}"""
+</transcript>
+"""
 
     def _build_multilingual_prompt(
         self, transcript: str, title: str, lang: str
@@ -217,33 +198,34 @@ Respond in the following JSON format only (no other text):
         if len(transcript) > max_chars:
             transcript = transcript[:max_chars] + "\n\n[Transcript truncated due to length]"
 
-        return f"""You are an AI assistant that analyzes video transcripts and provides concise summaries.
-
+        return f"""
+You are an expert content analyst. Your task is to analyze the provided YouTube video transcript and extract the most valuable information.
 Video Title: "{title}"
-Source Language: {lang_name}
 
 IMPORTANT: The transcript is in {lang_name}. Please:
 - Analyze the content accurately in the original language
 - Translate key terms, names, and important phrases to English in your summary
 - Ensure the brief and takeaways are written in English
 
-Given the following transcript (in {lang_name}), provide:
+CRITICAL INSTRUCTIONS:
+1. ONLY use the information provided in the <transcript> tags below. Do not hallucinate or add outside knowledge.
+2. You MUST format your response exactly according to the <output_template> provided.
 
-1. BRIEF SUMMARY (2-3 paragraphs in English):
-   A concise overview of the video's content and main topics.
+<output_template>
+### 📝 Brief Summary
+[Write 2-3 sentences summarizing the core topic.]
 
-2. KEY HIGHLIGHTS (5-7 bullet points in English):
-   The most important points, insights, or memorable moments.
+### 💡 Key Highlights
+* **[Concept]**: [Brief explanation]
+(Provide exactly 5 highlights)
 
-3. TAKEAWAY (1-2 sentences in English):
-   The main lesson, conclusion, or value the viewer should remember.
+### 🚀 Actionable Takeaways  
+* [Actionable step 1]
+* [Actionable step 2]
+* [Actionable step 3]
+</output_template>
 
-Transcript ({lang_name}):
+<transcript>
 {transcript}
-
-Respond in the following JSON format only (all text in English):
-{{
-  "brief": "...",
-  "highlights": ["...", "..."],
-  "takeaway": "..."
-}}"""
+</transcript>
+"""

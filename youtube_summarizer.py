@@ -7,7 +7,14 @@ import logging
 import re
 import urllib.request
 import json
-
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import (
+    TranscriptsDisabled,
+    NoTranscriptFound,
+    VideoUnavailable,
+    FailedToCreateSubtitles,
+    CouldNotRetrieveSpeechRecognitions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,15 +81,6 @@ class YouTubeSummarizer:
             dict with: text, language, is_auto_generated, duration_seconds, error
         """
         try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-            from youtube_transcript_api._errors import (
-                TranscriptsDisabled,
-                NoTranscriptFound,
-                VideoUnavailable,
-                FailedToCreateSubtitles,
-                CouldNotRetrieveSpeechRecognitions,
-            )
-
             # Extract video ID from URL
             video_id = self._extract_video_id(url)
 
@@ -163,14 +161,6 @@ class YouTubeSummarizer:
                 "error": None,
             }
 
-        except ImportError:
-            return {
-                "text": "",
-                "language": "unknown",
-                "is_auto_generated": False,
-                "duration_seconds": 0,
-                "error": "youtube-transcript-api not installed. Run: pip install youtube-transcript-api",
-            }
         except VideoUnavailable:
             return {
                 "text": "",
