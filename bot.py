@@ -27,12 +27,16 @@ from config import (
 )
 from config import ENABLE_AI_CACHE, CACHE_TTL_DAYS, CACHE_DB_PATH
 from cache import AICache, extract_post_id
-from downloader import download_video, detect_platform, download_youtube_audio
+from downloader import download_video, detect_platform
 from transcriber import Transcriber
 from translator import Translator
 from truth_monitor import monitor_loop
-from youtube_summarizer import YouTubeSummarizer
-from summarizer import Summarizer
+from youtube_summarizer import (
+    YouTubeSummarizer,
+    sanitize_youtube_url,
+    summarize_youtube_video,
+    _build_summary_prompt,
+)
 from typing import Optional
 
 # ── Global AI cache (None when ENABLE_AI_CACHE=false) ───────────────────────
@@ -462,117 +466,84 @@ async def process_youtube_url(
     status_msg,
     use_local_ai: bool = False,
 ):
-    """Handle YouTube URL - extract transcript and generate summary."""
+    """Handle YouTube URL - use Gemini native URL ingestion to generate summary."""
     summarizer = YouTubeSummarizer()
 
-    # 1. Get metadata
-    await status_msg.edit_text("📹 Fetching video metadata...")
-    meta = summarizer.get_metadata(url)
-
-    if meta.get("error"):
-        await status_msg.edit_text(f"❌ {meta['error']}")
-        return
-
-    video_id = meta.get("video_id")
-
-    # 2. Check if already being processed (soft lock)
-    cache_key = f"summary:youtube:{video_id}"
-
-    # Check cache first (fast path)
-    if _cache:
-        cached_summary = _cache.get(cache_key)
-        if cached_summary:
-            await send_youtube_summary(update, meta, cached_summary, status_msg)
+    try:
+        # 1. Sanitize the URL
+        try:
+            clean_url = sanitize_youtube_url(url)
+        except ValueError as e:
+            await status_msg.edit_text(f"❌ Invalid YouTube URL: {str(e)}")
             return
 
-        # Check if another coroutine is processing this video
-        if video_id in _processing_videos:
-            await status_msg.edit_text(
-                "⏳ This video is being processed by another request. Please wait..."
-            )
-            # Wait for the other task
-            try:
-                await asyncio.wait_for(_processing_videos[video_id], timeout=120)
-            except asyncio.TimeoutError:
-                pass
-            # Try cache again
+        # 2. Get metadata (title, thumbnail, etc.)
+        await status_msg.edit_text("📹 Fetching video metadata...")
+        meta = summarizer.get_metadata(clean_url)
+
+        if meta.get("error"):
+            await status_msg.edit_text(f"❌ {meta['error']}")
+            return
+
+        video_id = meta.get("video_id")
+        cache_key = f"summary:youtube:{video_id}"
+
+        # 3. Check cache first (fast path)
+        if _cache:
             cached_summary = _cache.get(cache_key)
             if cached_summary:
                 await send_youtube_summary(update, meta, cached_summary, status_msg)
                 return
 
-    # 3. Extract transcript
-    await status_msg.edit_text("📝 Extracting transcript...")
-    transcript_result = summarizer.extract_transcript(url)
+            # Check if another coroutine is processing this video
+            if video_id in _processing_videos:
+                await status_msg.edit_text(
+                    "⏳ This video is being processed by another request. Please wait..."
+                )
+                try:
+                    await asyncio.wait_for(_processing_videos[video_id], timeout=120)
+                except asyncio.TimeoutError:
+                    pass
+                # Try cache again
+                cached_summary = _cache.get(cache_key)
+                if cached_summary:
+                    await send_youtube_summary(update, meta, cached_summary, status_msg)
+                    return
 
-    if transcript_result.get("error"):
-        await status_msg.edit_text(f"⚠️ {transcript_result['error']}\n\n🔄 Falling back to audio extraction...")
-        
-        dl_result = download_youtube_audio(url, max_duration_sec=1800)
-        
-        if dl_result.error:
-            await status_msg.edit_text(f"❌ Audio fallback failed: {dl_result.error}")
+        # 4. Call Gemini native URL ingestion
+        await status_msg.edit_text("🤖 Analyzing video with Gemini (this may take a moment)...")
+
+        user_prompt = _build_summary_prompt(meta["title"])
+        summary_text = summarize_youtube_video(clean_url, user_prompt)
+
+        # 5. Check if result is an error message from _handle_gemini_error()
+        if summary_text.startswith("❌") or summary_text.startswith("⚠️"):
+            await status_msg.edit_text(summary_text)
             return
-            
-        audio_path = dl_result.file_path
-        await status_msg.edit_text("🎤 Audio extracted. Transcribing...")
-        
-        transcriber = Transcriber()
-        audio_trans_result = transcriber.transcribe_audio(audio_path, use_local_ai=use_local_ai)
-        cleanup_file(audio_path)
-        
-        if audio_trans_result.get("error") and not audio_trans_result.get("skipped"):
-            await status_msg.edit_text(f"❌ Transcription failed: {audio_trans_result['error']}")
-            return
-            
-        raw_transcript = audio_trans_result["text"]
-        is_auto_caption = audio_trans_result.get("auto_detected", True)
-        transcript_result["language"] = audio_trans_result.get("detected_language", "unknown")
-    else:
-        raw_transcript = transcript_result["text"]
-        is_auto_caption = transcript_result.get("is_auto_generated", False)
 
-    if not raw_transcript or not raw_transcript.strip():
+        # 6. Build result dict
+        summary_result = {
+            "summary_text": summary_text,
+            "source_language": "en",
+        }
+
+        # 7. Cache results
+        if _cache:
+            _cache.set(cache_key, summary_result)
+
+        # 8. Send response
+        await send_youtube_summary(update, meta, summary_result, status_msg)
+
+    except Exception as e:
+        logger.error(f"Error processing YouTube URL: {e}", exc_info=True)
         await status_msg.edit_text(
-            "❌ This video doesn't have enough speech content to summarize."
+            "❌ An error occurred while processing the video. Please try again later."
         )
-        return
 
-    # 4. Clean transcript
-    clean_transcript = summarizer.clean_transcript(raw_transcript)
-    transcript_quality, quality_note = summarizer.detect_transcript_quality(
-        clean_transcript, is_auto_caption
-    )
-
-    # 5. Generate summary
-    await status_msg.edit_text("🤖 Generating AI summary...")
-    ai_summarizer = Summarizer()
-    summary_result = ai_summarizer.generate_summary(
-        clean_transcript,
-        meta["title"],
-        source_language=transcript_result.get("language", "unknown"),
-    )
-
-    if summary_result.get("error"):
-        await status_msg.edit_text(
-            f"❌ Summary generation failed: {summary_result['error']}"
-        )
-        return
-
-    # 6. Add metadata to result
-    summary_result["transcript_quality"] = transcript_quality
-    summary_result["is_auto_caption"] = is_auto_caption
-
-    # 7. Cache results
-    if _cache:
-        _cache.set(cache_key, summary_result)
-
-    # 8. Send response
-    await send_youtube_summary(update, meta, summary_result, status_msg)
-
-    # 9. Cleanup lock
-    if video_id in _processing_videos:
-        del _processing_videos[video_id]
+    finally:
+        # Cleanup lock
+        if hasattr(process_youtube_url, '_id') and _processing_videos.get(process_youtube_url._id):
+            del _processing_videos[process_youtube_url._id]
 
 
 async def send_youtube_summary(

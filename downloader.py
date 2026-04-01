@@ -21,7 +21,7 @@ if "SSLKEYLOGFILE" not in os.environ:
 
 from dataclasses import dataclass, field
 import time
-from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID, INSTAGRAM_USERNAME, YOUTUBE_COOKIES_FILE
+from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID, INSTAGRAM_USERNAME
 
 try:
     import instaloader  # type: ignore[import-untyped]
@@ -697,12 +697,7 @@ def download_video(url: str) -> MediaResult:
 
     target_url = normalize_instagram_url(url) if platform == "instagram" else url
     download_dir = tempfile.mkdtemp(prefix=f"{platform}_")
-    cookies_path = None
-    if platform == "instagram":
-        cookies_path = _resolve_cookies_file()
-    elif platform == "youtube" and YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
-        cookies_path = YOUTUBE_COOKIES_FILE
-    
+    cookies_path = _resolve_cookies_file() if platform == "instagram" else None
     logger = logging.getLogger(__name__)
 
     # Use multi-layered fallback for Instagram /p/ posts (which yt-dlp blocks)
@@ -887,82 +882,4 @@ def download_video(url: str) -> MediaResult:
         platform=platform,
         error=f"Download failed after trying all methods. Error: {last_error}",
     )
-
-
-def download_youtube_audio(url: str, max_duration_sec: int = 1800) -> MediaResult:
-    """
-    Download ONLY the audio track for a YouTube video using yt-dlp.
-    Respects max_duration_sec to prevent downloading massive files (e.g. 10 hours).
-    Returns a MediaResult containing the path to the original audio file.
-    """
-    if not is_youtube_url(url):
-        return MediaResult(post_url=url, platform="youtube", error="Invalid YouTube URL")
-
-    download_dir = tempfile.mkdtemp(prefix="ytaudio_")
-    
-    # Configure yt-dlp for pure audio
-    ydl_opts = {
-        "outtmpl": os.path.join(download_dir, "%(id)s.%(ext)s"),
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": False,
-        "format": "bestaudio/best",
-        "js_runtimes": {"deno": {"path": "/home/ubuntu/.deno/bin/deno"}},
-        "remote_components": ["ejs:github"],
-    }
-    
-    # Generate dynamic PO Token via rustypipe-botguard for YouTube's recent web token reqs
-    try:
-        logger = logging.getLogger(__name__)
-        video_id_match = re.search(r"(?:v=|/)([0-9A-Za-z_-]{11})", url)
-        if video_id_match:
-            video_id = video_id_match.group(1)
-            botguard_bin = os.path.expanduser("~/.local/bin/rustypipe-botguard")
-            if os.path.exists(botguard_bin):
-                res = subprocess.run([botguard_bin, video_id], capture_output=True, text=True, timeout=5)
-                if res.returncode == 0 and res.stdout.strip():
-                    po_token = res.stdout.split()[0]
-                    ydl_opts["extractor_args"] = {"youtube": {"player_client": ["web"], "po_token": [f"web+{po_token}"]}}
-                    logger.info(f"Successfully generated dynamic PO Token for video {video_id}")
-    except Exception as e:
-        pass
-    
-    if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
-        ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE
-    
-    logger = logging.getLogger(__name__)
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # 1. Extract info without downloading to check duration
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                return MediaResult(post_url=url, platform="youtube", error="Failed to fetch video info")
-            
-            duration = info.get("duration", 0)
-            if duration > max_duration_sec:
-                return MediaResult(
-                    post_url=url, 
-                    platform="youtube", 
-                    error=f"Video is too long ({int(duration/60)} mins) for AI audio transcription fallback. Max allowed is {int(max_duration_sec/60)} mins."
-                )
-            
-            # 2. Proceed with download
-            info = ydl.extract_info(url, download=True)
-            return process_info_result(info, url, download_dir, "youtube")
-            
-    except Exception as e:
-        err_msg = str(e).lower()
-        if "sign in" in err_msg or "confirm you're not a bot" in err_msg or "bot" in err_msg:
-            return MediaResult(
-                post_url=url, 
-                platform="youtube", 
-                error=(
-                    "❌ YouTube is blocking this server (Bot Detection).\n\n"
-                    "Fix:\n"
-                    "1. Export fresh cookies from a **logged-in** YouTube account.\n"
-                    "2. Save them to `youtube_cookies.txt` on the server."
-                )
-            )
-        logger.warning(f"yt-dlp youtube audio extract failed: {e}")
-        return MediaResult(post_url=url, platform="youtube", error=f"yt-dlp failed: {e}")
 

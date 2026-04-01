@@ -1,43 +1,29 @@
 """
-YouTube metadata and transcript extraction.
-Uses youtube-transcript-api for transcript extraction and YouTube oEmbed API for metadata.
+YouTube metadata extraction and native Gemini API video summarization.
+Uses YouTube oEmbed API for metadata and Gemini API with native URL ingestion for summarization.
+No local video/audio downloads required.
 """
 
 import logging
 import re
 import urllib.request
+import urllib.parse
 import json
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import (
-    TranscriptsDisabled,
-    NoTranscriptFound,
-    VideoUnavailable,
-)
-import os
-from config import YOUTUBE_COOKIES_FILE
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
 
 class YouTubeSummarizer:
-    """Extract metadata and transcript from YouTube videos."""
-
-    # Non-speech patterns to filter from transcripts
-    NON_SPEECH_PATTERNS = [
-        r"\[.*?\]",  # [Music], [Applause], [Laughter]
-        r"\(.*?\)",  # (Applause), (laughter)
-        r"^\s*♪+\s*$",  # Musical notes
-        r"^\s*🔔\s*$",  # Bell emoji
-        r"^\s*Music\s*$",  # Music labels
-        r"\s{3,}",  # Multiple spaces
-    ]
+    """Extract metadata from YouTube videos."""
 
     def get_metadata(self, url: str) -> dict:
         """
         Get video metadata using YouTube oEmbed API (no auth required).
 
         Returns:
-            dict with: video_id, title, thumbnail, url, author_name
+            dict with: video_id, title, thumbnail, url, author_name, error
         """
         try:
             video_id = self._extract_video_id(url)
@@ -73,207 +59,17 @@ class YouTubeSummarizer:
         except Exception as e:
             return {"error": f"Failed to get video metadata: {str(e)}"}
 
-    def extract_transcript(self, url: str) -> dict:
-        """
-        Extract transcript using youtube-transcript-api.
+    def format_duration(self, seconds: int) -> str:
+        """Format seconds as HH:MM:SS or MM:SS."""
+        if seconds <= 0:
+            return "N/A"
 
-        Returns:
-            dict with: text, language, is_auto_generated, duration_seconds, error
-        """
-        try:
-            # Extract video ID from URL
-            video_id = self._extract_video_id(url)
+        hours, remainder = divmod(int(seconds), 3600)
+        minutes, secs = divmod(remainder, 60)
 
-            # Try to get manually created transcript first
-            try:
-                kwargs = {}
-                if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
-                    kwargs["cookies"] = YOUTUBE_COOKIES_FILE
-                
-                # youtube-transcript-api 1.x.x+
-                transcript_list = YouTubeTranscriptApi().list(video_id, **kwargs)
-            except (AttributeError, TypeError):
-                # Fallback to < 1.0.0
-                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, **kwargs)
-
-            # Priority: manually created > auto-generated (English) > any auto-generated
-            transcript = None
-            is_auto = False
-            language_code = "en"
-
-            try:
-                # Try English first
-                transcript = transcript_list.find_transcript(["en"])
-                is_auto = transcript.is_generated
-                language_code = transcript.language_code
-            except NoTranscriptFound:
-                try:
-                    # Try any manually created transcript (not auto-generated)
-                    for t in transcript_list:
-                        if not t.is_generated:
-                            transcript = t
-                            is_auto = False
-                            language_code = t.language_code
-                            break
-                except Exception:
-                    pass
-
-            # Fallback to any auto-generated
-            if transcript is None:
-                try:
-                    transcript = transcript_list.find_generated_transcript(["en"])
-                    is_auto = True
-                    language_code = "en"
-                except NoTranscriptFound:
-                    # Try any available transcript
-                    try:
-                        transcript = transcript_list.find_transcript(
-                            [t.language_code for t in transcript_list]
-                        )
-                        is_auto = transcript.is_generated
-                        language_code = transcript.language_code
-                    except NoTranscriptFound:
-                        return {
-                            "text": "",
-                            "language": "unknown",
-                            "is_auto_generated": False,
-                            "duration_seconds": 0,
-                            "error": "This video doesn't have subtitles or transcripts available",
-                        }
-
-            # Fetch transcript data
-            transcript_data = transcript.fetch()
-
-            # Calculate duration from transcript entries
-            duration_seconds = 0
-            if transcript_data:
-                last_entry = transcript_data[-1]
-                duration_seconds = last_entry.start + last_entry.duration
-
-            # Combine into single text
-            lines = []
-            for entry in transcript_data:
-                text = entry.text.strip()
-                if text:
-                    lines.append(text)
-
-            full_text = " ".join(lines)
-
-            # Detect language code
-            detected_lang = language_code.split("-")[0] if "-" in language_code else language_code
-
-            return {
-                "text": full_text,
-                "language": detected_lang,
-                "is_auto_generated": is_auto,
-                "duration_seconds": duration_seconds,
-                "error": None,
-            }
-
-        except VideoUnavailable:
-            return {
-                "text": "",
-                "language": "unknown",
-                "is_auto_generated": False,
-                "duration_seconds": 0,
-                "error": "This video is not available or has been removed",
-            }
-        except TranscriptsDisabled:
-            return {
-                "text": "",
-                "language": "unknown",
-                "is_auto_generated": False,
-                "duration_seconds": 0,
-                "error": "This video has disabled subtitles/transcripts",
-            }
-        except Exception as e:
-            error_str = str(e).lower()
-            if "sign in" in error_str or "bot" in error_str:
-                return {
-                    "text": "",
-                    "language": "unknown",
-                    "is_auto_generated": False,
-                    "duration_seconds": 0,
-                    "error": "YouTube is blocking requests. Please try again later.",
-                }
-            logger.error(f"Transcript extraction error: {e}")
-            return {
-                "text": "",
-                "language": "unknown",
-                "is_auto_generated": False,
-                "duration_seconds": 0,
-                "error": f"Failed to extract transcript: {str(e)}",
-            }
-
-    def clean_transcript(self, transcript: str) -> str:
-        """
-        Remove non-speech elements from transcript.
-        Handles: [Music], [Applause], (laughter), timestamps, filler words.
-
-        Returns cleaned transcript.
-        """
-        if not transcript:
-            return ""
-
-        text = transcript
-
-        # Step 1: Remove bracketed content
-        text = re.sub(r"\[.*?\]", "", text)
-        text = re.sub(r"\(.*?\)", "", text)
-
-        # Step 2: Remove lines that are mostly music/sounds
-        lines = text.split("\n")
-        cleaned_lines = []
-        for line in lines:
-            stripped = line.strip().lower()
-            # Skip lines that are mostly music/sound markers
-            if any(kw in stripped for kw in ["music", "♪", "♫", "🔔"]):
-                continue
-            if len(stripped) < 3:  # Skip very short lines
-                continue
-            cleaned_lines.append(line)
-
-        text = " ".join(cleaned_lines)
-
-        # Step 3: Collapse excessive whitespace
-        text = re.sub(r"\s+", " ", text)
-
-        # Step 4: Add basic punctuation where missing (simple heuristic)
-        text = re.sub(r"(\w)$", r"\1.", text)
-
-        return text.strip()
-
-    def detect_transcript_quality(
-        self, transcript: str, is_auto: bool
-    ) -> tuple[str, str]:
-        """
-        Assess transcript quality.
-
-        Returns:
-            tuple of (quality: str, note: str)
-            quality: "excellent" | "good" | "fair" | "poor" | "very_poor"
-        """
-        word_count = len(transcript.split())
-
-        # Very short = very poor
-        if word_count < 50:
-            return "very_poor", "Very limited transcript available"
-
-        # Check for common auto-caption issues
-        if is_auto:
-            # Auto-captions often have no punctuation
-            has_punctuation = any(c in transcript for c in ".!?,")
-            if not has_punctuation:
-                return "poor", "Auto-captions may have errors"
-            if word_count < 200:
-                return "fair", "Fair quality transcript"
-
-        if word_count > 500:
-            return "excellent", "High quality transcript"
-        elif word_count > 200:
-            return "good", "Good quality transcript"
-        else:
-            return "fair", "Fair quality transcript"
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
 
     def _extract_video_id(self, url: str) -> str:
         """Extract video ID from various YouTube URL formats."""
@@ -290,14 +86,173 @@ class YouTubeSummarizer:
 
         raise ValueError(f"Could not extract video ID from URL: {url}")
 
-    def format_duration(self, seconds: int) -> str:
-        """Format seconds as HH:MM:SS or MM:SS."""
-        if seconds <= 0:
-            return "N/A"
 
-        hours, remainder = divmod(int(seconds), 3600)
-        minutes, secs = divmod(remainder, 60)
+def sanitize_youtube_url(url: str) -> str:
+    """
+    Sanitize YouTube URL by:
+    1. Converting youtu.be/ID to youtube.com/watch?v=ID
+    2. Stripping tracking parameters (?si=, &t=, &feature=, etc.)
+    3. Removing fragments and ensuring HTTPS
 
-        if hours > 0:
-            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-        return f"{minutes:02d}:{secs:02d}"
+    Args:
+        url: Raw YouTube URL
+
+    Returns:
+        Sanitized YouTube URL ready for Gemini API consumption
+    """
+    if not url:
+        raise ValueError("URL cannot be empty")
+
+    # Ensure HTTPS
+    if url.startswith("http://"):
+        url = "https://" + url[7:]
+    elif not url.startswith("https://"):
+        url = "https://" + url
+
+    # Parse URL
+    parsed = urllib.parse.urlparse(url)
+
+    # Convert youtu.be to youtube.com/watch format
+    if parsed.netloc in ("youtu.be", "www.youtu.be"):
+        video_id = parsed.path.lstrip("/").split("?")[0].split("#")[0]
+        if not video_id:
+            raise ValueError("Invalid youtu.be URL: no video ID")
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        parsed = urllib.parse.urlparse(url)
+
+    # Extract video ID and rebuild URL with only essential params
+    try:
+        video_id = YouTubeSummarizer()._extract_video_id(url)
+    except ValueError:
+        raise ValueError(f"Could not extract video ID from URL: {url}")
+
+    # Detect URL type (watch vs shorts)
+    if "youtube.com/shorts/" in url:
+        clean_url = f"https://www.youtube.com/shorts/{video_id}"
+    elif "youtube.com/watch" in url or "youtu.be" in url:
+        clean_url = f"https://www.youtube.com/watch?v={video_id}"
+    else:
+        raise ValueError(f"Unsupported YouTube URL format: {url}")
+
+    logger.debug(f"Sanitized URL: {url} → {clean_url}")
+    return clean_url
+
+
+def _build_summary_prompt(video_title: str) -> str:
+    """
+    Build the prompt for Gemini to summarize the YouTube video.
+
+    Args:
+        video_title: Title of the YouTube video
+
+    Returns:
+        Prompt string for the Gemini API
+    """
+    return f"""You are an expert content analyst. Analyze this YouTube video and provide a comprehensive summary.
+
+Video Title: "{video_title}"
+
+Please provide your response in the following format:
+
+### 📝 Brief Summary
+[Write 2-3 sentences summarizing the core topic and main message.]
+
+### 💡 Key Highlights
+* **[Concept/Topic]**: [Brief explanation]
+* **[Concept/Topic]**: [Brief explanation]
+* **[Concept/Topic]**: [Brief explanation]
+* **[Concept/Topic]**: [Brief explanation]
+* **[Concept/Topic]**: [Brief explanation]
+
+### 🚀 Actionable Takeaways
+* [Action or key learning 1]
+* [Action or key learning 2]
+* [Action or key learning 3]
+
+Be concise, accurate, and only reference information that is actually present in the video."""
+
+
+def summarize_youtube_video(youtube_url: str, user_prompt: str) -> str:
+    """
+    Summarize a YouTube video using Gemini API's native URL ingestion.
+    Does NOT download the video locally.
+
+    Args:
+        youtube_url: Sanitized YouTube URL (use sanitize_youtube_url first)
+        user_prompt: The summarization prompt
+
+    Returns:
+        Summary text or error message string
+    """
+    try:
+        client = genai.Client()  # Automatically picks up GEMINI_API_KEY from env
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=types.Content(
+                parts=[
+                    # Native Ingestion: passing the URL directly to Gemini
+                    types.Part(file_data=types.FileData(file_uri=youtube_url)),
+                    types.Part(text=user_prompt),
+                ]
+            ),
+        )
+
+        return response.text
+
+    except Exception as e:
+        return _handle_gemini_error(e)
+
+
+def _handle_gemini_error(e: Exception) -> str:
+    """
+    Map Gemini API errors to user-friendly messages.
+
+    Handles:
+    - Private/unlisted videos
+    - Videos exceeding context length
+    - Age-restricted or safety-blocked content
+    - Generic errors
+
+    Args:
+        e: The exception from Gemini API
+
+    Returns:
+        User-friendly error message
+    """
+    error_str = str(e).lower()
+
+    # Private/Unlisted Videos
+    if any(
+        phrase in error_str
+        for phrase in ["private", "permission", "access denied", "403", "forbidden"]
+    ):
+        return "I can only process public YouTube videos. Please check the video's privacy settings."
+
+    # Context Limit Exceeded (video too long)
+    if any(
+        phrase in error_str
+        for phrase in [
+            "context_length_exceeded",
+            "too long",
+            "token limit",
+            "max tokens",
+            "resource_exhausted",
+        ]
+    ):
+        return "This video is too long for me to process right now. Please submit a shorter video."
+
+    # Age-Restricted or Safety-Blocked Content
+    if any(
+        phrase in error_str
+        for phrase in ["safety", "age", "restricted", "finishreason", "blocked"]
+    ):
+        return "This video appears to be age-restricted or contains content I cannot process."
+
+    # Video unavailable (404, deleted, etc.)
+    if any(phrase in error_str for phrase in ["404", "not found", "unavailable"]):
+        return "This video is not available or has been removed."
+
+    # Generic fallback
+    logger.error(f"Gemini API error: {e}", exc_info=True)
+    return "Failed to summarize this video. Please try again later."
