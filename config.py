@@ -22,6 +22,9 @@ TRUTH_RSS_URL = os.getenv("TRUTH_RSS_URL", "https://trumpstruth.org/feed")
 # Get cookies from browser and save as Netscape format (.txt)
 INSTAGRAM_COOKIES_FILE = os.getenv("INSTAGRAM_COOKIES_FILE")
 
+# YouTube cookies for bypassing anti-bot IP blocks on datacenter servers
+YOUTUBE_COOKIES_FILE = os.getenv("YOUTUBE_COOKIES_FILE")
+
 # Instagram session ID (alternative to full cookies file — easier to obtain)
 # Get from browser DevTools > Application > Cookies > instagram.com > sessionid
 INSTAGRAM_SESSION_ID = os.getenv("INSTAGRAM_SESSION_ID")

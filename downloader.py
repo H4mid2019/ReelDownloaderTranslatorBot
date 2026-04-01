@@ -21,7 +21,7 @@ if "SSLKEYLOGFILE" not in os.environ:
 
 from dataclasses import dataclass, field
 import time
-from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID, INSTAGRAM_USERNAME
+from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID, INSTAGRAM_USERNAME, YOUTUBE_COOKIES_FILE
 
 try:
     import instaloader  # type: ignore[import-untyped]
@@ -901,6 +901,9 @@ def download_youtube_audio(url: str, max_duration_sec: int = 1800) -> MediaResul
         "extract_flat": False,
         "format": "bestaudio/best",
     }
+    
+    if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+        ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE
     
     logger = logging.getLogger(__name__)
     try:
