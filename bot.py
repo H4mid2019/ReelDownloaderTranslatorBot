@@ -27,7 +27,7 @@ from config import (
 )
 from config import ENABLE_AI_CACHE, CACHE_TTL_DAYS, CACHE_DB_PATH
 from cache import AICache, extract_post_id
-from downloader import download_video, detect_platform
+from downloader import download_video, detect_platform, download_youtube_audio
 from transcriber import Transcriber
 from translator import Translator
 from truth_monitor import monitor_loop
@@ -460,6 +460,7 @@ async def process_youtube_url(
     context: ContextTypes.DEFAULT_TYPE,
     url: str,
     status_msg,
+    use_local_ai: bool = False,
 ):
     """Handle YouTube URL - extract transcript and generate summary."""
     summarizer = YouTubeSummarizer()
@@ -505,11 +506,31 @@ async def process_youtube_url(
     transcript_result = summarizer.extract_transcript(url)
 
     if transcript_result.get("error"):
-        await status_msg.edit_text(f"❌ {transcript_result['error']}")
-        return
-
-    raw_transcript = transcript_result["text"]
-    is_auto_caption = transcript_result.get("is_auto_generated", False)
+        await status_msg.edit_text(f"⚠️ {transcript_result['error']}\n\n🔄 Falling back to audio extraction...")
+        
+        dl_result = download_youtube_audio(url, max_duration_sec=1800)
+        
+        if dl_result.error:
+            await status_msg.edit_text(f"❌ Audio fallback failed: {dl_result.error}")
+            return
+            
+        audio_path = dl_result.file_path
+        await status_msg.edit_text("🎤 Audio extracted. Transcribing...")
+        
+        transcriber = Transcriber()
+        audio_trans_result = transcriber.transcribe_audio(audio_path, use_local_ai=use_local_ai)
+        cleanup_file(audio_path)
+        
+        if audio_trans_result.get("error") and not audio_trans_result.get("skipped"):
+            await status_msg.edit_text(f"❌ Transcription failed: {audio_trans_result['error']}")
+            return
+            
+        raw_transcript = audio_trans_result["text"]
+        is_auto_caption = audio_trans_result.get("auto_detected", True)
+        transcript_result["language"] = audio_trans_result.get("detected_language", "unknown")
+    else:
+        raw_transcript = transcript_result["text"]
+        is_auto_caption = transcript_result.get("is_auto_generated", False)
 
     if not raw_transcript or not raw_transcript.strip():
         await status_msg.edit_text(
@@ -658,10 +679,9 @@ async def process_url(
         )
         return
 
-    # ── Handle YouTube (summary, no download) ─────────────────────────────────
     if platform == "youtube":
         status_msg = await update.message.reply_text("⏳ Processing YouTube video...")
-        await process_youtube_url(update, context, url, status_msg)
+        await process_youtube_url(update, context, url, status_msg, use_local_ai)
         return
 
     # Send initial processing message

@@ -880,3 +880,49 @@ def download_video(url: str) -> MediaResult:
         platform=platform,
         error=f"Download failed after trying all methods. Error: {last_error}",
     )
+
+
+def download_youtube_audio(url: str, max_duration_sec: int = 1800) -> MediaResult:
+    """
+    Download ONLY the audio track for a YouTube video using yt-dlp.
+    Respects max_duration_sec to prevent downloading massive files (e.g. 10 hours).
+    Returns a MediaResult containing the path to the original audio file.
+    """
+    if not is_youtube_url(url):
+        return MediaResult(post_url=url, platform="youtube", error="Invalid YouTube URL")
+
+    download_dir = tempfile.mkdtemp(prefix="ytaudio_")
+    
+    # Configure yt-dlp for pure audio
+    ydl_opts = {
+        "outtmpl": os.path.join(download_dir, "%(id)s.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": False,
+        "format": "bestaudio/best",
+    }
+    
+    logger = logging.getLogger(__name__)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # 1. Extract info without downloading to check duration
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                return MediaResult(post_url=url, platform="youtube", error="Failed to fetch video info")
+            
+            duration = info.get("duration", 0)
+            if duration > max_duration_sec:
+                return MediaResult(
+                    post_url=url, 
+                    platform="youtube", 
+                    error=f"Video is too long ({int(duration/60)} mins) for AI audio transcription fallback. Max allowed is {int(max_duration_sec/60)} mins."
+                )
+            
+            # 2. Proceed with download
+            info = ydl.extract_info(url, download=True)
+            return process_info_result(info, url, download_dir, "youtube")
+            
+    except Exception as e:
+        logger.warning(f"yt-dlp youtube audio extract failed: {e}")
+        return MediaResult(post_url=url, platform="youtube", error=f"yt-dlp failed: {e}")
+
