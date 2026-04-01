@@ -143,6 +143,8 @@ def _base_ydl_opts(download_dir: str) -> dict:
         # Cap at Instagram Reel standard (720x1280 portrait or 1280p landscape equiv) to prevent huge files
         # Portrait videos have height=1280, width=720; landscape height<=720
         "format": "bestvideo[height<=1280][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1280]+bestaudio/best[height<=1280]/best",
+        "js_runtimes": {"deno": {"path": "/home/ubuntu/.deno/bin/deno"}},
+        "remote_components": ["ejs:github"],
     }
 
 
@@ -695,7 +697,12 @@ def download_video(url: str) -> MediaResult:
 
     target_url = normalize_instagram_url(url) if platform == "instagram" else url
     download_dir = tempfile.mkdtemp(prefix=f"{platform}_")
-    cookies_path = _resolve_cookies_file() if platform == "instagram" else None
+    cookies_path = None
+    if platform == "instagram":
+        cookies_path = _resolve_cookies_file()
+    elif platform == "youtube" and YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+        cookies_path = YOUTUBE_COOKIES_FILE
+    
     logger = logging.getLogger(__name__)
 
     # Use multi-layered fallback for Instagram /p/ posts (which yt-dlp blocks)
@@ -900,7 +907,25 @@ def download_youtube_audio(url: str, max_duration_sec: int = 1800) -> MediaResul
         "no_warnings": True,
         "extract_flat": False,
         "format": "bestaudio/best",
+        "js_runtimes": {"deno": {"path": "/home/ubuntu/.deno/bin/deno"}},
+        "remote_components": ["ejs:github"],
     }
+    
+    # Generate dynamic PO Token via rustypipe-botguard for YouTube's recent web token reqs
+    try:
+        logger = logging.getLogger(__name__)
+        video_id_match = re.search(r"(?:v=|/)([0-9A-Za-z_-]{11})", url)
+        if video_id_match:
+            video_id = video_id_match.group(1)
+            botguard_bin = os.path.expanduser("~/.local/bin/rustypipe-botguard")
+            if os.path.exists(botguard_bin):
+                res = subprocess.run([botguard_bin, video_id], capture_output=True, text=True, timeout=5)
+                if res.returncode == 0 and res.stdout.strip():
+                    po_token = res.stdout.split()[0]
+                    ydl_opts["extractor_args"] = {"youtube": {"player_client": ["web"], "po_token": [f"web+{po_token}"]}}
+                    logger.info(f"Successfully generated dynamic PO Token for video {video_id}")
+    except Exception as e:
+        pass
     
     if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
         ydl_opts["cookiefile"] = YOUTUBE_COOKIES_FILE
@@ -926,6 +951,18 @@ def download_youtube_audio(url: str, max_duration_sec: int = 1800) -> MediaResul
             return process_info_result(info, url, download_dir, "youtube")
             
     except Exception as e:
+        err_msg = str(e).lower()
+        if "sign in" in err_msg or "confirm you're not a bot" in err_msg or "bot" in err_msg:
+            return MediaResult(
+                post_url=url, 
+                platform="youtube", 
+                error=(
+                    "❌ YouTube is blocking this server (Bot Detection).\n\n"
+                    "Fix:\n"
+                    "1. Export fresh cookies from a **logged-in** YouTube account.\n"
+                    "2. Save them to `youtube_cookies.txt` on the server."
+                )
+            )
         logger.warning(f"yt-dlp youtube audio extract failed: {e}")
         return MediaResult(post_url=url, platform="youtube", error=f"yt-dlp failed: {e}")
 

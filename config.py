@@ -48,7 +48,7 @@ LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "base")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b")
 
 # YouTube Summarization settings
-YOUTUBE_SUMMARY_MODEL = os.getenv("YOUTUBE_SUMMARY_MODEL", "gemini-2.0-flash")
+YOUTUBE_SUMMARY_MODEL = os.getenv("YOUTUBE_SUMMARY_MODEL", "gemini-2.5-flash-lite")
 YOUTUBE_MAX_DURATION_SECONDS = int(os.getenv("YOUTUBE_MAX_DURATION_SECONDS", "7200"))
 
 # Logging configuration

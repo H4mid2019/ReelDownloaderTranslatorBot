@@ -13,6 +13,8 @@ from youtube_transcript_api._errors import (
     NoTranscriptFound,
     VideoUnavailable,
 )
+import os
+from config import YOUTUBE_COOKIES_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -84,11 +86,15 @@ class YouTubeSummarizer:
 
             # Try to get manually created transcript first
             try:
+                kwargs = {}
+                if YOUTUBE_COOKIES_FILE and os.path.exists(YOUTUBE_COOKIES_FILE):
+                    kwargs["cookies"] = YOUTUBE_COOKIES_FILE
+                
                 # youtube-transcript-api 1.x.x+
-                transcript_list = YouTubeTranscriptApi().list(video_id)
+                transcript_list = YouTubeTranscriptApi().list(video_id, **kwargs)
             except (AttributeError, TypeError):
                 # Fallback to < 1.0.0
-                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, **kwargs)
 
             # Priority: manually created > auto-generated (English) > any auto-generated
             transcript = None
