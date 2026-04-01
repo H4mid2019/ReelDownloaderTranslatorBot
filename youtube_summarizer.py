@@ -83,7 +83,12 @@ class YouTubeSummarizer:
             video_id = self._extract_video_id(url)
 
             # Try to get manually created transcript first
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            try:
+                # youtube-transcript-api 1.x.x+
+                transcript_list = YouTubeTranscriptApi().list(video_id)
+            except (AttributeError, TypeError):
+                # Fallback to < 1.0.0
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
             # Priority: manually created > auto-generated (English) > any auto-generated
             transcript = None
