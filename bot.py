@@ -114,7 +114,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - Show detailed help\n"
         "/d <url> - Manual download (if auto-detect fails)\n"
         "/dl <url> - Manual download using Local AI Fallback\n"
-        "/df <url> - Detailed source-language transcript + summary brief\n\n"
+        "/db <url> - Detailed source-language transcript + summary brief\n\n"
         + DISCLAIMER
     )
 
@@ -137,7 +137,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• **Truth Social:** Automated monitoring for specific alerts.\n\n"
         "💡 **Pro Tip:** Videos over 50MB are automatically split into smaller parts for Telegram compatibility.\n\n"
         "🧠 **Detailed Brief Command:**\n"
-        "• /df <url> - Generates a transcript, summary, key highlights, and takeaways in the source language.\n\n"
+        "• /db <url> - Generates a transcript, summary, key highlights, and takeaways in the source language.\n\n"
         + DISCLAIMER
     )
 
@@ -347,6 +347,11 @@ async def send_video_or_chunks(
         )
         if remuxed_path != original_video_path and os.path.exists(remuxed_path):
             cleanup_file(remuxed_path)
+        if status_msg:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
         return True
     else:
         if status_msg:
@@ -450,14 +455,14 @@ async def download_local_command(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def download_detailed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /df command for a source-language detailed video brief."""
+    """Handle /db command for a source-language detailed video brief."""
     if not update.message:
         return
     if not context.args:
         await update.message.reply_text(
             "❌ Please provide a URL.\n"
-            "Usage: /df <url>\n\n"
-            "Example: /df https://www.instagram.com/reel/ABC123/\n\n" + DISCLAIMER
+            "Usage: /db <url>\n\n"
+            "Example: /db https://www.instagram.com/reel/ABC123/\n\n" + DISCLAIMER
         )
         return
 
@@ -521,7 +526,7 @@ async def process_detailed_url(
 
         if result.media_type != "video" or len(result.file_paths) != 1:
             await status_msg.edit_text(
-                "❌ /df only supports single video posts. Please send an Instagram or X/Twitter video link."
+                "❌ /db only supports single video posts. Please send an Instagram or X/Twitter video link."
             )
             return
 
@@ -1333,7 +1338,7 @@ def main():
     application.add_handler(CommandHandler("clearcache", clearcache_command))
     application.add_handler(CommandHandler("d", download_command))
     application.add_handler(CommandHandler("dl", download_local_command))
-    application.add_handler(CommandHandler("df", download_detailed_command))
+    application.add_handler(CommandHandler("db", download_detailed_command))
 
     application.add_handler(
         MessageHandler(
