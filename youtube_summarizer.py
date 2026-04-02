@@ -227,7 +227,7 @@ def _handle_gemini_error(e: Exception) -> str:
         phrase in error_str
         for phrase in ["private", "permission", "access denied", "403", "forbidden"]
     ):
-        return "I can only process public YouTube videos. Please check the video's privacy settings."
+        return "❌ I can only process public YouTube videos. Please check the video's privacy settings."
 
     # Context Limit Exceeded (video too long)
     if any(
@@ -240,19 +240,19 @@ def _handle_gemini_error(e: Exception) -> str:
             "resource_exhausted",
         ]
     ):
-        return "This video is too long for me to process right now. Please submit a shorter video."
+        return "⚠️ This video is too long for me to process right now. Please submit a shorter video."
 
     # Age-Restricted or Safety-Blocked Content
     if any(
         phrase in error_str
         for phrase in ["safety", "age", "restricted", "finishreason", "blocked"]
     ):
-        return "This video appears to be age-restricted or contains content I cannot process."
+        return "⚠️ This video appears to be age-restricted or contains content I cannot process."
 
     # Video unavailable (404, deleted, etc.)
     if any(phrase in error_str for phrase in ["404", "not found", "unavailable"]):
-        return "This video is not available or has been removed."
+        return "❌ This video is not available or has been removed."
 
     # Generic fallback
     logger.error(f"Gemini API error: {e}", exc_info=True)
-    return "Failed to summarize this video. Please try again later."
+    return "❌ Failed to summarize this video. Please try again later."
