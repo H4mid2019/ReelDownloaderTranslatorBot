@@ -58,7 +58,7 @@ class Translator:
         cyrillic_pattern = any("\u0400" <= c <= "\u04ff" for c in text)
 
         try:
-            import langdetect
+            import langdetect  # type: ignore[import-not-found]
 
             # Predict language probabilities
             langs = langdetect.detect_langs(text)

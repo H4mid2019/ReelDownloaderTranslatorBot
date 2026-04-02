@@ -20,6 +20,19 @@ Simply send or forward any supported link to the bot. It will automatically dete
 
 - **Automated:** No commands needed! Just paste a link.
 - **Manual:** Use `/d <url>` if auto-detection doesn't trigger.
+- **Detailed Brief:** Use `/df <url>` to get a full transcript + AI summary in the video's source language.
+
+### Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Show the main command menu |
+| `/help` | Show detailed help |
+| `/d <url>` | Manual download (if auto-detect fails) |
+| `/dl <url>` | Manual download using Local AI Fallback |
+| `/df <url>` | Detailed source-language transcript + summary brief |
+| `/chatid` | Get the current chat ID |
+| `/clearcache` | Clear the AI response cache |
 
 ## ✨ Features
 
@@ -34,6 +47,13 @@ Simply send or forward any supported link to the bot. It will automatically dete
     - Uses **Groq Whisper** for lightning-fast transcription.
     - Auto-detects video language.
     - **Translates all non-English videos to English** (Except Persian).
+- **Detailed Brief (`/df`):**
+    - Uploads the video directly to **Gemini** for native video understanding.
+    - Returns a verbatim transcript, summary, key highlights, and takeaways — all in the **source language** of the video (including Persian/Farsi, Arabic, etc.).
+    - Results are cached to avoid redundant API calls.
+    - Supported platforms: Instagram video posts, X/Twitter video posts.
+- **YouTube Summarizer:**
+    - Paste any YouTube link and the bot fetches metadata and generates an AI summary via Gemini.
 - **Truth Social Monitor:**
     - Background task that polls Donald Trump's Truths via RSS.
     - Uses AI (Llama 3) to filter for posts related to **Iran**.

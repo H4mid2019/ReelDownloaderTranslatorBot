@@ -37,6 +37,11 @@ from youtube_summarizer import (
     summarize_youtube_video,
     _build_summary_prompt,
 )
+from video_brief import (
+    build_video_brief_messages,
+    generate_video_brief,
+    make_video_brief_cache_key,
+)
 from typing import Optional
 
 # ── Global AI cache (None when ENABLE_AI_CACHE=false) ───────────────────────
@@ -108,7 +113,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/chatid - Get the current chat ID\n"
         "/help - Show detailed help\n"
         "/d <url> - Manual download (if auto-detect fails)\n"
-        "/dl <url> - Manual download using Local AI Fallback\n\n" + DISCLAIMER
+        "/dl <url> - Manual download using Local AI Fallback\n"
+        "/df <url> - Detailed source-language transcript + summary brief\n\n"
+        + DISCLAIMER
     )
 
 
@@ -129,6 +136,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• **X/Twitter:** Status videos and text-only posts.\n"
         "• **Truth Social:** Automated monitoring for specific alerts.\n\n"
         "💡 **Pro Tip:** Videos over 50MB are automatically split into smaller parts for Telegram compatibility.\n\n"
+        "🧠 **Detailed Brief Command:**\n"
+        "• /df <url> - Generates a transcript, summary, key highlights, and takeaways in the source language.\n\n"
         + DISCLAIMER
     )
 
@@ -277,6 +286,7 @@ async def send_video_or_chunks(
 ) -> bool:
     """Send video or split chunks. Remuxes for Telegram compatibility if needed."""
     # Remux for Telegram (stream copy + faststart)
+    original_video_path = video_path
     remuxed_path = video_path
     if file_size_bytes > 30 * 1024 * 1024:  # Remux large videos
         remuxed_path = video_path + ".telegram.mp4"
@@ -335,6 +345,8 @@ async def send_video_or_chunks(
             read_timeout=120,
             write_timeout=120,
         )
+        if remuxed_path != original_video_path and os.path.exists(remuxed_path):
+            cleanup_file(remuxed_path)
         return True
     else:
         if status_msg:
@@ -393,7 +405,7 @@ async def send_video_or_chunks(
             )
 
         cleanup_chunks(chunk_paths, video_path)
-        if remuxed_path != video_path and os.path.exists(remuxed_path):
+        if remuxed_path != original_video_path and os.path.exists(remuxed_path):
             os.remove(remuxed_path)
         if status_msg:
             await status_msg.delete()
@@ -437,6 +449,22 @@ async def download_local_command(update: Update, context: ContextTypes.DEFAULT_T
     await process_url(update, context, url, use_local_ai=True)
 
 
+async def download_detailed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /df command for a source-language detailed video brief."""
+    if not update.message:
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Please provide a URL.\n"
+            "Usage: /df <url>\n\n"
+            "Example: /df https://www.instagram.com/reel/ABC123/\n\n" + DISCLAIMER
+        )
+        return
+
+    url = " ".join(context.args)
+    await process_detailed_url(update, context, url)
+
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle regular text messages to auto-detect supported URLs."""
     if not update.message:
@@ -451,6 +479,141 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         if detect_platform(url):
             await process_url(update, context, url)
             return
+
+
+async def process_detailed_url(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    url: str,
+):
+    """Process an Instagram/X video and return a detailed source-language brief."""
+    if not update.message or not update.message.from_user:
+        return
+
+    user = update.message.from_user
+    chat = update.message.chat
+    logger.info(
+        f"User {user.first_name} ({user.id}) in Chat {chat.title or chat.type} ({chat.id}) triggered detailed processing for {url}"
+    )
+
+    platform = detect_platform(url)
+    if platform not in {"instagram", "twitter"}:
+        await update.message.reply_text(
+            "❌ Unsupported URL for /df.\n\n"
+            "Supported:\n"
+            "• Instagram video posts\n"
+            "• X/Twitter video posts\n\n" + DISCLAIMER
+        )
+        return
+
+    status_msg = await update.message.reply_text(
+        f"⏳ Downloading from {platform} for a detailed brief..."
+    )
+
+    downloaded_path: Optional[str] = None
+    brief_status = None
+    try:
+        result = download_video(url)
+
+        if result.error:
+            await status_msg.edit_text(f"❌ Download failed: {result.error}")
+            return
+
+        if result.media_type != "video" or len(result.file_paths) != 1:
+            await status_msg.edit_text(
+                "❌ /df only supports single video posts. Please send an Instagram or X/Twitter video link."
+            )
+            return
+
+        downloaded_path = result.file_path
+
+        await status_msg.edit_text("📤 Sending video...")
+        sent_ok = await send_video_or_chunks(
+            update,
+            result.file_path,
+            result.file_size_bytes,
+            result.file_size_bytes / (1024 * 1024),
+            "Unknown",
+            result.platform,
+            post_caption=result.caption,
+            status_msg=status_msg,
+        )
+
+        if not sent_ok and update.message:
+            await update.message.reply_text(
+                "⚠️ I could not send the video itself, but I can still generate the detailed brief."
+            )
+
+        brief_status = await update.message.reply_text(
+            "🤖 Generating transcript and detailed brief with Gemini..."
+        )
+
+        post_id_tuple = extract_post_id(url)
+        cache_key = None
+        cached_brief = None
+        if _cache and post_id_tuple:
+            cache_key = make_video_brief_cache_key(post_id_tuple[0], post_id_tuple[1])
+            cached_brief = _cache.get(cache_key)
+
+        if cached_brief:
+            try:
+                await brief_status.delete()
+            except Exception:
+                pass
+            for message in build_video_brief_messages(
+                cached_brief, result.post_url, result.platform
+            ):
+                if update.message:
+                    await update.message.reply_text(
+                        message, disable_web_page_preview=True
+                    )
+            return
+
+        brief_result = generate_video_brief(
+            result.file_path,
+            caption_context=result.caption or result.tweet_text,
+            platform=result.platform,
+        )
+
+        if brief_result.get("error"):
+            await brief_status.edit_text(str(brief_result["error"]))
+            return
+
+        if _cache and cache_key:
+            _cache.set(cache_key, brief_result)
+
+        try:
+            await brief_status.delete()
+        except Exception:
+            pass
+
+        for message in build_video_brief_messages(
+            brief_result, result.post_url, result.platform
+        ):
+            if update.message:
+                await update.message.reply_text(message, disable_web_page_preview=True)
+
+    except Exception as e:
+        logger.error(f"Error processing detailed brief: {e}", exc_info=True)
+        try:
+            if brief_status:
+                await brief_status.edit_text(
+                    f"❌ An error occurred: {str(e)}\nPlease try again later."
+                )
+            elif status_msg:
+                await status_msg.edit_text(
+                    f"❌ An error occurred: {str(e)}\nPlease try again later."
+                )
+        except Exception:
+            try:
+                if update.message:
+                    await update.message.reply_text(
+                        f"❌ An error occurred: {str(e)}\nPlease try again later."
+                    )
+            except Exception:
+                pass
+    finally:
+        cleanup_file(downloaded_path or "")
 
 
 # ── YouTube URL handling ───────────────────────────────────────────────────────
@@ -511,7 +674,9 @@ async def process_youtube_url(
                     return
 
         # 4. Call Gemini native URL ingestion
-        await status_msg.edit_text("🤖 Analyzing video with Gemini (this may take a moment)...")
+        await status_msg.edit_text(
+            "🤖 Analyzing video with Gemini (this may take a moment)..."
+        )
 
         user_prompt = _build_summary_prompt(meta["title"])
         summary_text = summarize_youtube_video(clean_url, user_prompt)
@@ -542,14 +707,18 @@ async def process_youtube_url(
 
     finally:
         # Cleanup lock
-        if hasattr(process_youtube_url, '_id') and _processing_videos.get(process_youtube_url._id):
+        if hasattr(process_youtube_url, "_id") and _processing_videos.get(
+            process_youtube_url._id
+        ):
             del _processing_videos[process_youtube_url._id]
 
 
-async def send_youtube_summary(
-    update: Update, meta: dict, summary: dict, status_msg
-):
+async def send_youtube_summary(update: Update, meta: dict, summary: dict, status_msg):
     """Format and send YouTube summary to user."""
+    message = update.message
+    if not message:
+        return
+
     title = meta.get("title", "Unknown Video")
     duration = meta.get("duration_formatted", "N/A")
     url = meta.get("url", "")
@@ -611,13 +780,11 @@ async def send_youtube_summary(
     # Split message if too long (Telegram ~4096 char limit)
     if len(response) > 4000:
         # Send in parts (chunking by paragraph if possible)
-        chunks = [response[i:i+4000] for i in range(0, len(response), 4000)]
+        chunks = [response[i : i + 4000] for i in range(0, len(response), 4000)]
         for i, chunk in enumerate(chunks):
-            await update.message.reply_text(
-                chunk, disable_web_page_preview=(i == 0)
-            )
+            await message.reply_text(chunk, disable_web_page_preview=(i == 0))
     else:
-        await update.message.reply_text(response, disable_web_page_preview=True)
+        await message.reply_text(response, disable_web_page_preview=True)
 
 
 async def process_url(
@@ -1163,6 +1330,7 @@ def main():
     application.add_handler(CommandHandler("clearcache", clearcache_command))
     application.add_handler(CommandHandler("d", download_command))
     application.add_handler(CommandHandler("dl", download_local_command))
+    application.add_handler(CommandHandler("df", download_detailed_command))
 
     application.add_handler(
         MessageHandler(

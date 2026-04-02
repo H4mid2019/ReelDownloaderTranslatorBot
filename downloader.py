@@ -13,7 +13,7 @@ import logging
 import yt_dlp  # type: ignore[import-untyped]
 import sys
 import shutil
-from typing import Optional, List
+from typing import Any, List, Mapping, Optional
 
 # Fix for PermissionError on Windows Python 3.12 SSL keylogging
 if "SSLKEYLOGFILE" not in os.environ:
@@ -24,7 +24,7 @@ import time
 from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID, INSTAGRAM_USERNAME
 
 try:
-    import instaloader  # type: ignore[import-untyped]
+    import instaloader  # type: ignore[import-not-found,import-untyped]
 
     _INSTALOADER_AVAILABLE = True
 except ImportError:
@@ -194,7 +194,7 @@ def get_mobile_headers_options(
 
 
 def process_info_result(
-    info: dict,
+    info: Mapping[str, Any],
     original_url: str,
     download_dir: str,
     platform: str,
@@ -720,15 +720,12 @@ def download_video(url: str) -> MediaResult:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
             info = ydl.extract_info(target_url, download=True)
             if info:
-                tweet_text = (
-                    info.get("description", "")[:4000]
-                    if platform == "twitter"
-                    else None
-                )  # type: ignore[index]
+                description = str(info.get("description") or "")
+                tweet_text = description[:4000] if platform == "twitter" else None
                 _cleanup_temp_cookie(cookies_path)
                 return process_info_result(
                     info, url, download_dir, platform, tweet_text
-                )  # type: ignore[arg-type]
+                )
     except Exception as e:
         last_error = str(e)
         logger.warning(f"yt-dlp desktop failed: {last_error}")
@@ -739,15 +736,12 @@ def download_video(url: str) -> MediaResult:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
             info = ydl.extract_info(target_url, download=True)
             if info:
-                tweet_text = (
-                    info.get("description", "")[:4000]
-                    if platform == "twitter"
-                    else None
-                )  # type: ignore[index]
+                description = str(info.get("description") or "")
+                tweet_text = description[:4000] if platform == "twitter" else None
                 _cleanup_temp_cookie(cookies_path)
                 return process_info_result(
                     info, url, download_dir, platform, tweet_text
-                )  # type: ignore[arg-type]
+                )
     except Exception as e:
         last_error = str(e)
         logger.warning(f"yt-dlp mobile failed: {last_error}")
@@ -882,4 +876,3 @@ def download_video(url: str) -> MediaResult:
         platform=platform,
         error=f"Download failed after trying all methods. Error: {last_error}",
     )
-

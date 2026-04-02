@@ -174,7 +174,10 @@ class Transcriber:
                     break
                 time.sleep(2)
                 waited += 2
-                uploaded_file = client.files.get(name=uploaded_file.name)
+                uploaded_name = getattr(uploaded_file, "name", None)
+                if not isinstance(uploaded_name, str) or not uploaded_name:
+                    break
+                uploaded_file = client.files.get(name=uploaded_name)
 
             # Single prompt: detect language + transcribe + translate (all in one)
             prompt = (
@@ -204,7 +207,10 @@ class Transcriber:
                 ),
             )
 
-            data = json.loads(response.text)
+            response_text = response.text or ""
+            if not response_text:
+                raise ValueError("Google AI returned an empty response")
+            data = json.loads(response_text)
             lang_code = (data.get("language_code") or "").lower().strip()
             lang_name = data.get("language_name") or self.LANGUAGE_NAMES.get(
                 lang_code, lang_code.title()
@@ -254,7 +260,9 @@ class Transcriber:
             # Always clean up the uploaded file from Google's servers
             if uploaded_file:
                 try:
-                    client.files.delete(name=uploaded_file.name)
+                    uploaded_name = getattr(uploaded_file, "name", None)
+                    if isinstance(uploaded_name, str) and uploaded_name:
+                        client.files.delete(name=uploaded_name)
                 except Exception:
                     pass
 

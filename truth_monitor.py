@@ -6,7 +6,15 @@ to determine if they relate to Iran, sending an alert if they do.
 import os
 import asyncio
 import logging
-import feedparser
+
+try:
+    import feedparser  # type: ignore[import-not-found]
+
+    _FEEDPARSER_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency may be absent in CI
+    feedparser = None  # type: ignore[assignment]
+    _FEEDPARSER_AVAILABLE = False
+
 import groq
 
 from config import GROQ_API_KEY, TRUTH_ALERT_CHAT_ID, TRUTH_RSS_URL
@@ -67,6 +75,12 @@ Post:
             return False
 
     async def check_feed(self, application) -> None:
+        if not _FEEDPARSER_AVAILABLE:
+            logger.warning(
+                "feedparser is not installed; Truth Social monitoring is disabled."
+            )
+            return
+
         if not self.chat_id:
             # We don't want to log this spammy warning every 5 mins.
             # Only checking once and failing silently.
@@ -129,6 +143,10 @@ Post:
 
 async def monitor_loop(application):
     """Background task to poll Truth Social periodically."""
+    if not _FEEDPARSER_AVAILABLE:
+        logger.warning("Truth Social monitor disabled because feedparser is missing.")
+        return
+
     monitor = TruthMonitor()
     logger.info("Started Truth Social monitor loop.")
 

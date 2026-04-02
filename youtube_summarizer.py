@@ -198,7 +198,7 @@ def summarize_youtube_video(youtube_url: str, user_prompt: str) -> str:
             ),
         )
 
-        return response.text
+        return response.text or ""
 
     except Exception as e:
         return _handle_gemini_error(e)
