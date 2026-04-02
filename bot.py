@@ -527,7 +527,6 @@ async def process_detailed_url(
 
         downloaded_path = result.file_path
 
-        await status_msg.edit_text("📤 Sending video...")
         sent_ok = await send_video_or_chunks(
             update,
             result.file_path,
