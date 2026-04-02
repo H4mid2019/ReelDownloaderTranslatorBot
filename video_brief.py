@@ -287,7 +287,16 @@ def generate_video_brief(
                 raw_text.strip(),
                 flags=re.IGNORECASE | re.MULTILINE,
             ).strip()
-            payload = json.loads(stripped)
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError as json_err:
+                logger.warning(
+                    "Gemini returned malformed JSON (truncated?). raw_text[:300]=%r",
+                    raw_text[:300],
+                )
+                return {
+                    "error": "⚠️ Gemini returned an incomplete response. The video may be too long or complex — please try again."
+                }
 
         normalized = _normalize_response(payload)
         if not normalized["transcript"]:

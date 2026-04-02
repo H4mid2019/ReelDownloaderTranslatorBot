@@ -568,10 +568,14 @@ async def process_detailed_url(
                     )
             return
 
-        brief_result = generate_video_brief(
-            result.file_path,
-            caption_context=result.caption or result.tweet_text,
-            platform=result.platform,
+        loop = asyncio.get_event_loop()
+        brief_result = await loop.run_in_executor(
+            None,
+            lambda: generate_video_brief(
+                result.file_path,
+                caption_context=result.caption or result.tweet_text,
+                platform=result.platform,
+            ),
         )
 
         if brief_result.get("error"):
