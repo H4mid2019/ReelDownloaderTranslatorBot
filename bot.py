@@ -24,6 +24,7 @@ from config import (
     MAX_VIDEO_SIZE_BYTES,
     LOG_LEVEL,
     USE_LOCAL_AI,
+    RESPONSE_LANGUAGE,
 )
 from config import ENABLE_AI_CACHE, CACHE_TTL_DAYS, CACHE_DB_PATH
 from cache import AICache, extract_post_id
@@ -645,11 +646,11 @@ async def process_youtube_url(
         try:
             clean_url = sanitize_youtube_url(url)
         except ValueError as e:
-            await status_msg.edit_text(f"❌ Invalid YouTube URL: {str(e)}")
+            await status_msg.edit_text(f"❌ آدرس یوتیوب نامعتبر است: {str(e)}")
             return
 
         # 2. Get metadata (title, thumbnail, etc.)
-        await status_msg.edit_text("📹 Fetching video metadata...")
+        await status_msg.edit_text("📹 در حال دریافت اطلاعات ویدیو...")
         meta = summarizer.get_metadata(clean_url)
 
         if meta.get("error"):
@@ -669,7 +670,7 @@ async def process_youtube_url(
             # Check if another coroutine is processing this video
             if video_id in _processing_videos:
                 await status_msg.edit_text(
-                    "⏳ This video is being processed by another request. Please wait..."
+                    "⏳ این ویدیو در حال پردازش توسط درخواست دیگری است. لطفاً صبر کنید..."
                 )
                 try:
                     await asyncio.wait_for(_processing_videos[video_id], timeout=120)
@@ -683,10 +684,10 @@ async def process_youtube_url(
 
         # 4. Call Gemini native URL ingestion
         await status_msg.edit_text(
-            "🤖 Analyzing video with Gemini (this may take a moment)..."
+            "🤖 در حال تحلیل ویدیو با Gemini (ممکن است چند لحظه طول بکشد)..."
         )
 
-        user_prompt = _build_summary_prompt(meta["title"])
+        user_prompt = _build_summary_prompt(meta["title"], language=RESPONSE_LANGUAGE)
         summary_text = summarize_youtube_video(clean_url, user_prompt)
 
         # 5. Check if result is an error message from _handle_gemini_error()
@@ -710,7 +711,7 @@ async def process_youtube_url(
     except Exception as e:
         logger.error(f"Error processing YouTube URL: {e}", exc_info=True)
         await status_msg.edit_text(
-            "❌ An error occurred while processing the video. Please try again later."
+            "❌ خطایی در پردازش ویدیو رخ داد. لطفاً دوباره تلاش کنید."
         )
 
     finally:
@@ -743,36 +744,45 @@ async def send_youtube_summary(update: Update, meta: dict, summary: dict, status
         "poor": "⚠️",
         "very_poor": "❌",
     }
+    quality_labels = {
+        "excellent": "عالی",
+        "good": "خوب",
+        "fair": "متوسط",
+        "poor": "ضعیف",
+        "very_poor": "بسیار ضعیف",
+        "unknown": "نامشخص",
+    }
 
     response = f"🎬 **{title}**\n"
-    response += f"⏱️ Duration: {duration}\n"
-    response += f"🔗 [Watch on YouTube]({url})\n"
+    response += f"⏱️ مدت زمان: {duration}\n"
+    response += f"🔗 [مشاهده در یوتیوب]({url})\n"
 
     if source_lang != "en":
         lang_names = {
-            "ja": "Japanese",
-            "ko": "Korean",
-            "es": "Spanish",
-            "de": "German",
-            "fr": "French",
-            "pt": "Portuguese",
-            "ru": "Russian",
-            "zh": "Chinese",
-            "ar": "Arabic",
-            "hi": "Hindi",
-            "it": "Italian",
-            "tr": "Turkish",
-            "nl": "Dutch",
-            "pl": "Polish",
-            "vi": "Vietnamese",
-            "th": "Thai",
-            "id": "Indonesian",
+            "ja": "ژاپنی",
+            "ko": "کره‌ای",
+            "es": "اسپانیایی",
+            "de": "آلمانی",
+            "fr": "فرانسوی",
+            "pt": "پرتغالی",
+            "ru": "روسی",
+            "zh": "چینی",
+            "ar": "عربی",
+            "hi": "هندی",
+            "it": "ایتالیایی",
+            "tr": "ترکی",
+            "nl": "هلندی",
+            "pl": "لهستانی",
+            "vi": "ویتنامی",
+            "th": "تایلندی",
+            "id": "اندونزیایی",
         }
         lang_name = lang_names.get(source_lang, source_lang.upper())
-        response += f"🌐 Source: {lang_name}\n"
+        response += f"🌐 زبان اصلی: {lang_name}\n"
 
     quality_icon = quality_emoji.get(transcript_quality, "❓")
-    response += f"{quality_icon} {transcript_quality.replace('_', ' ').title()}\n"
+    quality_label = quality_labels.get(transcript_quality, transcript_quality)
+    response += f"{quality_icon} {quality_label}\n"
 
     response += "\n━━━━━━━━━━━━━━━━━━━━\n\n"
     response += summary_text
@@ -826,7 +836,7 @@ async def process_url(
         return
 
     if platform == "youtube":
-        status_msg = await update.message.reply_text("⏳ Processing YouTube video...")
+        status_msg = await update.message.reply_text("⏳ در حال پردازش ویدیو یوتیوب...")
         await process_youtube_url(update, context, url, status_msg, use_local_ai)
         return
 

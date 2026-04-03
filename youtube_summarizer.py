@@ -52,12 +52,12 @@ class YouTubeSummarizer:
 
         except urllib.error.HTTPError as e:
             if e.code == 404:
-                return {"error": "This video is not available or has been removed"}
+                return {"error": "این ویدیو در دسترس نیست یا حذف شده است"}
             elif e.code == 403:
-                return {"error": "This video is private or restricted"}
-            return {"error": f"Failed to get video metadata: HTTP {e.code}"}
+                return {"error": "این ویدیو خصوصی یا محدود شده است"}
+            return {"error": f"دریافت اطلاعات ویدیو ناموفق بود: HTTP {e.code}"}
         except Exception as e:
-            return {"error": f"Failed to get video metadata: {str(e)}"}
+            return {"error": f"دریافت اطلاعات ویدیو ناموفق بود: {str(e)}"}
 
     def format_duration(self, seconds: int) -> str:
         """Format seconds as HH:MM:SS or MM:SS."""
@@ -138,16 +138,44 @@ def sanitize_youtube_url(url: str) -> str:
     return clean_url
 
 
-def _build_summary_prompt(video_title: str) -> str:
+def _build_summary_prompt(video_title: str, language: str = "fa") -> str:
     """
     Build the prompt for Gemini to summarize the YouTube video.
 
     Args:
         video_title: Title of the YouTube video
+        language: ISO 639-1 language code for the response (default: "fa" for Persian)
 
     Returns:
         Prompt string for the Gemini API
     """
+    if language == "fa":
+        return f"""تمام پاسخ خود را به زبان فارسی بنویس. تمام عنوان‌ها، توضیحات و نکات باید به فارسی باشند.
+
+تو یک تحلیلگر محتوای حرفه‌ای هستی. این ویدیوی یوتیوب را تحلیل کن و یک خلاصه جامع ارائه بده.
+
+عنوان ویدیو: "{video_title}"
+
+لطفاً پاسخ خود را دقیقاً در قالب زیر بنویس:
+
+### 📝 خلاصه کوتاه
+[۲ تا ۳ جمله که موضوع اصلی و پیام محوری ویدیو را خلاصه می‌کند.]
+
+### 💡 نکات کلیدی
+* **[مفهوم/موضوع]**: [توضیح کوتاه]
+* **[مفهوم/موضوع]**: [توضیح کوتاه]
+* **[مفهوم/موضوع]**: [توضیح کوتاه]
+* **[مفهوم/موضوع]**: [توضیح کوتاه]
+* **[مفهوم/موضوع]**: [توضیح کوتاه]
+
+### 🚀 درس‌های کاربردی
+* [اقدام یا یادگیری کلیدی ۱]
+* [اقدام یا یادگیری کلیدی ۲]
+* [اقدام یا یادگیری کلیدی ۳]
+
+مختصر، دقیق باش و فقط به اطلاعاتی که واقعاً در ویدیو وجود دارد اشاره کن."""
+
+    # Default English prompt
     return f"""You are an expert content analyst. Analyze this YouTube video and provide a comprehensive summary.
 
 Video Title: "{video_title}"
@@ -227,7 +255,7 @@ def _handle_gemini_error(e: Exception) -> str:
         phrase in error_str
         for phrase in ["private", "permission", "access denied", "403", "forbidden"]
     ):
-        return "❌ I can only process public YouTube videos. Please check the video's privacy settings."
+        return "❌ فقط ویدیوهای عمومی یوتیوب قابل پردازش هستند. لطفاً تنظیمات حریم خصوصی ویدیو را بررسی کنید."
 
     # Context Limit Exceeded (video too long)
     if any(
@@ -240,19 +268,19 @@ def _handle_gemini_error(e: Exception) -> str:
             "resource_exhausted",
         ]
     ):
-        return "⚠️ This video is too long for me to process right now. Please submit a shorter video."
+        return "⚠️ این ویدیو برای پردازش بسیار طولانی است. لطفاً ویدیوی کوتاه‌تری ارسال کنید."
 
     # Age-Restricted or Safety-Blocked Content
     if any(
         phrase in error_str
         for phrase in ["safety", "age", "restricted", "finishreason", "blocked"]
     ):
-        return "⚠️ This video appears to be age-restricted or contains content I cannot process."
+        return "⚠️ این ویدیو دارای محدودیت سنی است یا محتوای قابل پردازش ندارد."
 
     # Video unavailable (404, deleted, etc.)
     if any(phrase in error_str for phrase in ["404", "not found", "unavailable"]):
-        return "❌ This video is not available or has been removed."
+        return "❌ این ویدیو در دسترس نیست یا حذف شده است."
 
     # Generic fallback
     logger.error(f"Gemini API error: {e}", exc_info=True)
-    return "❌ Failed to summarize this video. Please try again later."
+    return "❌ خلاصه‌سازی این ویدیو ناموفق بود. لطفاً دوباره تلاش کنید."

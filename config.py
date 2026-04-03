@@ -14,6 +14,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_AI_MODEL = os.getenv("GOOGLE_AI_MODEL", "gemini-2.5-flash-lite")
 
+# Output language for YouTube summaries (ISO 639-1 code, e.g. "fa", "en", "de")
+RESPONSE_LANGUAGE = os.getenv("RESPONSE_LANGUAGE", "fa")
+
 # Truth Social configuration
 TRUTH_ALERT_CHAT_ID = os.getenv("TRUTH_ALERT_CHAT_ID")
 TRUTH_RSS_URL = os.getenv("TRUTH_RSS_URL", "https://trumpstruth.org/feed")
