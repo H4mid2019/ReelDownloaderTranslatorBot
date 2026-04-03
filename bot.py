@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import asyncio
 from telegram import Update, InputMediaPhoto, InputMediaVideo
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -1355,9 +1356,18 @@ def main():
             (filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_text_message
         )
     )
+    application.add_error_handler(error_handler)
 
     logger.info("Bot is running! Press Ctrl+C to stop.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log errors; silently drop transient network glitches (Bad Gateway, timeouts)."""
+    if isinstance(context.error, (NetworkError, TimedOut)):
+        logger.debug("Transient network error (auto-retry): %s", context.error)
+        return
+    logger.error("Unhandled exception", exc_info=context.error)
 
 
 if __name__ == "__main__":
