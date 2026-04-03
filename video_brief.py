@@ -268,8 +268,27 @@ def generate_video_brief(
                 response_mime_type="application/json",
                 response_json_schema=_BRIEF_RESPONSE_SCHEMA,
                 temperature=0.2,
+                max_output_tokens=8192,
             ),
         )
+
+        # Detect truncation before touching response.text — a MAX_TOKENS finish
+        # means the JSON was cut off mid-stream and will never parse successfully.
+        candidate = (response.candidates or [None])[0]
+        if candidate is not None:
+            finish_reason = getattr(candidate, "finish_reason", None)
+            if finish_reason == types.FinishReason.MAX_TOKENS:
+                logger.warning(
+                    "Gemini hit MAX_TOKENS limit for video brief (model=%s). "
+                    "Response was truncated before JSON was complete.",
+                    model_name,
+                )
+                return {
+                    "error": (
+                        "⚠️ The video transcript is too long to process in one pass. "
+                        "Try a shorter clip or a model with a larger output window."
+                    )
+                }
 
         raw_text = (response.text or "").strip()
         if not raw_text:
@@ -289,13 +308,16 @@ def generate_video_brief(
             ).strip()
             try:
                 payload = json.loads(stripped)
-            except json.JSONDecodeError as json_err:
+            except json.JSONDecodeError:
                 logger.warning(
                     "Gemini returned malformed JSON (truncated?). raw_text[:300]=%r",
                     raw_text[:300],
                 )
                 return {
-                    "error": "⚠️ Gemini returned an incomplete response. The video may be too long or complex — please try again."
+                    "error": (
+                        "⚠️ Gemini returned an incomplete response. "
+                        "The video may be too long or complex — please try again."
+                    )
                 }
 
         normalized = _normalize_response(payload)
