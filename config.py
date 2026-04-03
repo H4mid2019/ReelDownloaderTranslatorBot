@@ -22,16 +22,12 @@ TRUTH_RSS_URL = os.getenv("TRUTH_RSS_URL", "https://trumpstruth.org/feed")
 # Get cookies from browser and save as Netscape format (.txt)
 INSTAGRAM_COOKIES_FILE = os.getenv("INSTAGRAM_COOKIES_FILE")
 
-# YouTube cookies for bypassing anti-bot IP blocks on datacenter servers
-YOUTUBE_COOKIES_FILE = os.getenv("YOUTUBE_COOKIES_FILE")
-
 # Instagram session ID (alternative to full cookies file — easier to obtain)
 # Get from browser DevTools > Application > Cookies > instagram.com > sessionid
 INSTAGRAM_SESSION_ID = os.getenv("INSTAGRAM_SESSION_ID")
 
 # Legacy credentials (broken with current yt-dlp Instagram extractor — use cookies instead)
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
-INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
 
 # Model configuration (can be changed via .env)
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3")
@@ -39,16 +35,6 @@ TRANSLATION_MODEL = os.getenv("TRANSLATION_MODEL", "llama-3.3-70b-versatile")
 
 # Google AI Fallback flag — enables the /dl command (was previously local AI)
 USE_LOCAL_AI = os.getenv("USE_LOCAL_AI", "False").lower() in ("true", "1", "yes")
-
-# Legacy local AI settings (kept for reference, no longer used by /dl)
-LOCAL_STT_URL = os.getenv("LOCAL_STT_URL", "http://localhost:8000/v1")
-LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL", "http://localhost:11434/v1")
-LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "base")
-LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b")
-
-# YouTube Summarization settings
-YOUTUBE_SUMMARY_MODEL = os.getenv("YOUTUBE_SUMMARY_MODEL", "gemini-2.5-flash-lite")
-YOUTUBE_MAX_DURATION_SECONDS = int(os.getenv("YOUTUBE_MAX_DURATION_SECONDS", "7200"))
 
 # Logging configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
