@@ -128,6 +128,42 @@ def build_video_brief_prompt(
     )
 
 
+def _build_condensed_brief_prompt(
+    platform: str,
+    caption_context: Optional[str] = None,
+) -> str:
+    """Fallback prompt for very long videos — requests condensed transcript."""
+    caption_block = ""
+    if caption_context and caption_context.strip():
+        caption_block = (
+            "\n\nAdditional post context (caption or tweet text):\n"
+            f"""{caption_context.strip()}"""
+        )
+
+    return (
+        "You are an expert video analyst. "
+        f"Analyze this {platform} video and return ONLY a JSON object.\n\n"
+        "Requirements:\n"
+        "- The transcript field must be a condensed key-points transcript (max ~800 words), "
+        "NOT verbatim — preserve the original spoken language but summarize repetitive sections.\n"
+        "- The summary, key highlights, and takeaways must be written in the SAME source language as the transcript.\n"
+        "- Do not translate the analysis into English unless the source language is English.\n"
+        "- If the video mixes languages, choose the dominant language and keep the entire report consistent in that language.\n"
+        "- Keep key highlights concise and specific.\n"
+        "- Keep takeaways actionable and practical.\n"
+        "- Return no markdown fences, no commentary, no prose outside JSON.\n\n"
+        "JSON shape:\n"
+        "{\n"
+        '  "source_language_code": "ISO 639-1 code",\n'
+        '  "source_language_name": "Human readable language name",\n'
+        '  "transcript": "Condensed key-points transcript in the original language",\n'
+        '  "summary": "Brief summary in the original language",\n'
+        '  "key_highlights": ["...", "..."],\n'
+        '  "takeaways": ["...", "..."]\n'
+        "}" + caption_block
+    )
+
+
 def _friendly_error_message(exc: Exception) -> str:
     error_str = str(exc).lower()
     if any(
@@ -268,27 +304,49 @@ def generate_video_brief(
                 response_mime_type="application/json",
                 response_json_schema=_BRIEF_RESPONSE_SCHEMA,
                 temperature=0.2,
-                max_output_tokens=8192,
+                max_output_tokens=65535,
             ),
         )
 
         # Detect truncation before touching response.text — a MAX_TOKENS finish
         # means the JSON was cut off mid-stream and will never parse successfully.
+        # Retry once with a condensed-transcript prompt before giving up.
         candidate = (response.candidates or [None])[0]
         if candidate is not None:
             finish_reason = getattr(candidate, "finish_reason", None)
             if finish_reason == types.FinishReason.MAX_TOKENS:
                 logger.warning(
-                    "Gemini hit MAX_TOKENS limit for video brief (model=%s). "
-                    "Response was truncated before JSON was complete.",
+                    "Gemini hit MAX_TOKENS for video brief (model=%s). "
+                    "Retrying with condensed transcript prompt.",
                     model_name,
                 )
-                return {
-                    "error": (
-                        "⚠️ The video transcript is too long to process in one pass. "
-                        "Try a shorter clip or a model with a larger output window."
-                    )
-                }
+                condensed_prompt = _build_condensed_brief_prompt(
+                    platform, caption_context
+                )
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[uploaded_file, condensed_prompt],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_json_schema=_BRIEF_RESPONSE_SCHEMA,
+                        temperature=0.2,
+                        max_output_tokens=65535,
+                    ),
+                )
+                retry_candidate = (response.candidates or [None])[0]
+                if retry_candidate is not None:
+                    retry_finish = getattr(retry_candidate, "finish_reason", None)
+                    if retry_finish == types.FinishReason.MAX_TOKENS:
+                        logger.warning(
+                            "Condensed retry also hit MAX_TOKENS (model=%s).",
+                            model_name,
+                        )
+                        return {
+                            "error": (
+                                "⚠️ The video transcript is too long to process in one pass. "
+                                "Try a shorter clip or a model with a larger output window."
+                            )
+                        }
 
         raw_text = (response.text or "").strip()
         if not raw_text:

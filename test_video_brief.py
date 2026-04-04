@@ -1,6 +1,5 @@
 import json
 from types import SimpleNamespace
-
 import video_brief
 
 
@@ -84,7 +83,11 @@ def test_generate_video_brief_uses_configured_model_and_normalizes_output(
                 "key_highlights": ["نکته ۱", "نکته ۲"],
                 "takeaways": ["برداشت ۱"],
             }
-            return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False))
+            # candidates=[] means finish_reason check is safely skipped
+            return SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False),
+                candidates=[],
+            )
 
     fake_client = SimpleNamespace(files=FakeFiles(), models=FakeModels())
 
@@ -107,3 +110,137 @@ def test_generate_video_brief_uses_configured_model_and_normalizes_output(
     assert calls["contents"][0] is uploaded_file
     assert isinstance(calls["contents"][1], str)
     assert deleted_names == ["files/123"]
+    # Verify max_output_tokens is always set to prevent truncation
+    assert getattr(calls["config"], "max_output_tokens", None) == 65535
+
+
+def test_generate_video_brief_max_tokens_finish_reason_returns_error(
+    tmp_path, monkeypatch
+):
+    """When Gemini hits MAX_TOKENS, return a clear error before JSON parsing."""
+    from google.genai import types as real_types
+
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"fake video bytes")
+
+    monkeypatch.setattr(video_brief, "_GOOGLE_AI_AVAILABLE", True)
+    monkeypatch.setattr(video_brief, "GEMINI_API_KEY", "fake-key")
+
+    uploaded_file = SimpleNamespace(name="files/abc", state="READY")
+
+    class FakeFiles:
+        def upload(self, file, config):
+            return uploaded_file
+
+        def get(self, name):
+            return uploaded_file
+
+        def delete(self, name):
+            pass
+
+    class FakeModels:
+        def generate_content(self, model, contents, config):
+            # Simulate truncated response: finish_reason is MAX_TOKENS
+            candidate = SimpleNamespace(
+                finish_reason=real_types.FinishReason.MAX_TOKENS
+            )
+            return SimpleNamespace(
+                text='{"source_language_code": "fa", "transcript": "متن ناقص',  # broken JSON
+                candidates=[candidate],
+            )
+
+    fake_client = SimpleNamespace(files=FakeFiles(), models=FakeModels())
+    result = video_brief.generate_video_brief(
+        str(video_path), client=fake_client
+    )
+
+    assert result.get("error") is not None
+    assert "too long" in result["error"].lower() or "transcript" in result["error"].lower()
+    # Must NOT contain a parsed payload
+    assert "source_language_code" not in result
+
+
+def test_generate_video_brief_stop_reason_parses_json_normally(
+    tmp_path, monkeypatch
+):
+    """finish_reason=STOP (normal) must still parse the JSON response."""
+    from google.genai import types as real_types
+
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"fake video bytes")
+
+    monkeypatch.setattr(video_brief, "_GOOGLE_AI_AVAILABLE", True)
+    monkeypatch.setattr(video_brief, "GEMINI_API_KEY", "fake-key")
+
+    uploaded_file = SimpleNamespace(name="files/xyz", state="READY")
+    payload = {
+        "source_language_code": "en",
+        "source_language_name": "English",
+        "transcript": "Hello world",
+        "summary": "A test",
+        "key_highlights": ["point 1"],
+        "takeaways": ["do this"],
+    }
+
+    class FakeFiles:
+        def upload(self, file, config):
+            return uploaded_file
+
+        def get(self, name):
+            return uploaded_file
+
+        def delete(self, name):
+            pass
+
+    class FakeModels:
+        def generate_content(self, model, contents, config):
+            candidate = SimpleNamespace(finish_reason=real_types.FinishReason.STOP)
+            return SimpleNamespace(
+                text=json.dumps(payload),
+                candidates=[candidate],
+            )
+
+    fake_client = SimpleNamespace(files=FakeFiles(), models=FakeModels())
+    result = video_brief.generate_video_brief(str(video_path), client=fake_client)
+
+    assert result["error"] is None
+    assert result["transcript"] == "Hello world"
+
+
+def test_generate_video_brief_no_candidates_still_works(tmp_path, monkeypatch):
+    """Empty candidates list must not crash — falls through to JSON parsing."""
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"fake video bytes")
+
+    monkeypatch.setattr(video_brief, "_GOOGLE_AI_AVAILABLE", True)
+    monkeypatch.setattr(video_brief, "GEMINI_API_KEY", "fake-key")
+
+    uploaded_file = SimpleNamespace(name="files/x", state="READY")
+    payload = {
+        "source_language_code": "fa",
+        "source_language_name": "Persian",
+        "transcript": "سلام",
+        "summary": "خلاصه",
+        "key_highlights": ["نکته"],
+        "takeaways": ["برداشت"],
+    }
+
+    class FakeFiles:
+        def upload(self, file, config):
+            return uploaded_file
+
+        def get(self, name):
+            return uploaded_file
+
+        def delete(self, name):
+            pass
+
+    class FakeModels:
+        def generate_content(self, model, contents, config):
+            return SimpleNamespace(text=json.dumps(payload), candidates=[])
+
+    fake_client = SimpleNamespace(files=FakeFiles(), models=FakeModels())
+    result = video_brief.generate_video_brief(str(video_path), client=fake_client)
+
+    assert result["error"] is None
+    assert result["transcript"] == "سلام"
