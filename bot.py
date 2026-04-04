@@ -70,6 +70,69 @@ DISCLAIMER = """
 # Chunk size for splitting large videos (30MB target provides 20MB buffer for keyframe bleeding)
 VIDEO_CHUNK_SIZE_BYTES = 30 * 1024 * 1024
 
+# ── Instagram download queue (rate-limit protection) ─────────────────────────
+# Serialises Instagram/Twitter downloads so only one runs at a time, with a
+# cooldown between consecutive requests to avoid 429 rate-limits.
+_INSTAGRAM_QUEUE_DELAY = 5  # seconds between consecutive Instagram downloads
+
+_ig_queue: asyncio.Queue | None = None  # lazily initialised in post_init
+
+
+def _get_ig_queue() -> asyncio.Queue:
+    """Return the global Instagram queue, creating it if needed."""
+    global _ig_queue
+    if _ig_queue is None:
+        _ig_queue = asyncio.Queue()
+    return _ig_queue
+
+
+async def _ig_queue_worker() -> None:
+    """Background worker — pulls (future, url) pairs off the queue one at a
+    time, runs the download in a thread-pool executor, and enforces a cooldown
+    before processing the next item."""
+    loop = asyncio.get_running_loop()
+    q = _get_ig_queue()
+    while True:
+        fut, url = await q.get()
+        try:
+            result = await loop.run_in_executor(None, download_video, url)
+            fut.set_result(result)
+        except Exception as exc:
+            fut.set_exception(exc)
+        finally:
+            q.task_done()
+            # Cooldown before processing the next request
+            if not q.empty():
+                logger.debug(
+                    "Instagram queue: %d pending — waiting %ds before next request",
+                    q.qsize(),
+                    _INSTAGRAM_QUEUE_DELAY,
+                )
+            await asyncio.sleep(_INSTAGRAM_QUEUE_DELAY)
+
+
+async def queued_download_video(url: str) -> "MediaResult":
+    """Enqueue an Instagram/Twitter download and wait for the result.
+
+    Non-Instagram URLs are executed immediately in the thread-pool executor
+    without going through the queue."""
+    from downloader import MediaResult  # noqa: F811 — local to avoid circular at module level
+
+    platform = detect_platform(url)
+    loop = asyncio.get_running_loop()
+
+    if platform not in ("instagram", "twitter"):
+        # No rate-limit concern — run directly in executor
+        return await loop.run_in_executor(None, download_video, url)
+
+    q = _get_ig_queue()
+    fut: asyncio.Future[MediaResult] = loop.create_future()
+    await q.put((fut, url))
+    pos = q.qsize()
+    if pos > 1:
+        logger.info("Instagram queue: request for %s queued at position %d", url, pos)
+    return await fut
+
 
 async def post_init(application: Application):
     """Start background tasks after bot initialization."""
@@ -85,6 +148,9 @@ async def post_init(application: Application):
         )
     task = asyncio.create_task(monitor_loop(application))
     application.bot_data["truth_monitor_task"] = task
+    # Start Instagram download queue worker
+    ig_task = asyncio.create_task(_ig_queue_worker())
+    application.bot_data["ig_queue_worker"] = ig_task
 
 
 async def post_stop(application: Application):
@@ -520,7 +586,7 @@ async def process_detailed_url(
     downloaded_path: Optional[str] = None
     brief_status = None
     try:
-        result = download_video(url)
+        result = await queued_download_video(url)
 
         if result.error:
             await status_msg.edit_text(f"❌ Download failed: {result.error}")
@@ -845,8 +911,8 @@ async def process_url(
     status_msg = await update.message.reply_text(f"⏳ Downloading from {platform}...")
 
     try:
-        # Download the video
-        result = download_video(url)
+        # Download the video (queued for Instagram/Twitter rate-limit protection)
+        result = await queued_download_video(url)
 
         if result.error:
             await status_msg.edit_text(f"❌ Download failed: {result.error}")
