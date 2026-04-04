@@ -115,7 +115,8 @@ def build_video_brief_prompt(
         "- If the video mixes languages, choose the dominant language and keep the entire report consistent in that language.\n"
         "- Keep key highlights concise and specific.\n"
         "- Keep takeaways actionable and practical.\n"
-        "- Return no markdown fences, no commentary, no prose outside JSON.\n\n"
+        "- Return no markdown fences, no commentary, no prose outside JSON.\n"
+        "- Do NOT embed markdown (**, ##, -, *) inside any JSON string value.\n\n"
         "JSON shape:\n"
         "{\n"
         '  "source_language_code": "ISO 639-1 code",\n'
@@ -142,24 +143,30 @@ def _build_condensed_brief_prompt(
 
     return (
         "You are an expert video analyst. "
-        f"Analyze this {platform} video and return ONLY a JSON object.\n\n"
-        "Requirements:\n"
-        "- The transcript field must be a condensed key-points transcript (max ~800 words), "
-        "NOT verbatim — preserve the original spoken language but summarize repetitive sections.\n"
-        "- The summary, key highlights, and takeaways must be written in the SAME source language as the transcript.\n"
-        "- Do not translate the analysis into English unless the source language is English.\n"
-        "- If the video mixes languages, choose the dominant language and keep the entire report consistent in that language.\n"
-        "- Keep key highlights concise and specific.\n"
-        "- Keep takeaways actionable and practical.\n"
-        "- Return no markdown fences, no commentary, no prose outside JSON.\n\n"
+        f"Analyze this {platform} video and return ONLY a valid JSON object — "
+        "no markdown, no prose, no commentary outside the JSON.\n\n"
+        "⚠️ CRITICAL LANGUAGE RULE — NON-NEGOTIABLE:\n"
+        "Detect the spoken language of the video. "
+        "Every single JSON field — transcript, summary, key_highlights, takeaways — "
+        "MUST be written in that same spoken language. "
+        "If the video is in Persian/Farsi, write ALL fields in Persian/Farsi. "
+        "If the video is in Arabic, write ALL fields in Arabic. "
+        "NEVER use English for any field unless the video itself is spoken in English. "
+        "Translating into English is strictly forbidden.\n\n"
+        "Additional requirements:\n"
+        "- transcript: condensed key-points (max ~800 words), NOT verbatim — "
+        "summarize repetitive sections but preserve the original spoken language.\n"
+        "- Do NOT embed markdown (**, ##, -, *) inside any JSON string value.\n"
+        "- Keep key_highlights concise and specific.\n"
+        "- Keep takeaways actionable and practical.\n\n"
         "JSON shape:\n"
         "{\n"
-        '  "source_language_code": "ISO 639-1 code",\n'
-        '  "source_language_name": "Human readable language name",\n'
-        '  "transcript": "Condensed key-points transcript in the original language",\n'
-        '  "summary": "Brief summary in the original language",\n'
-        '  "key_highlights": ["...", "..."],\n'
-        '  "takeaways": ["...", "..."]\n'
+        '  "source_language_code": "ISO 639-1 code e.g. fa",\n'
+        '  "source_language_name": "Human readable e.g. Persian",\n'
+        '  "transcript": "Condensed transcript in the SPOKEN language of the video",\n'
+        '  "summary": "Summary in the SPOKEN language of the video",\n'
+        '  "key_highlights": ["highlight in spoken language", "..."],\n'
+        '  "takeaways": ["takeaway in spoken language", "..."]\n'
         "}" + caption_block
     )
 
