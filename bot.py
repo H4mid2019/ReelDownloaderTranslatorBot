@@ -92,23 +92,39 @@ async def _ig_queue_worker() -> None:
     before processing the next item."""
     loop = asyncio.get_running_loop()
     q = _get_ig_queue()
-    while True:
-        fut, url = await q.get()
-        try:
-            result = await loop.run_in_executor(None, download_video, url)
-            fut.set_result(result)
-        except Exception as exc:
-            fut.set_exception(exc)
-        finally:
-            q.task_done()
-            # Cooldown before processing the next request
-            if not q.empty():
-                logger.debug(
-                    "Instagram queue: %d pending — waiting %ds before next request",
-                    q.qsize(),
-                    _INSTAGRAM_QUEUE_DELAY,
-                )
-            await asyncio.sleep(_INSTAGRAM_QUEUE_DELAY)
+    try:
+        while True:
+            fut, url = await q.get()
+            try:
+                result = await loop.run_in_executor(None, download_video, url)
+                if not fut.cancelled():
+                    fut.set_result(result)
+            except asyncio.CancelledError:
+                fut.cancel()
+                raise
+            except Exception as exc:
+                if not fut.cancelled():
+                    fut.set_exception(exc)
+            finally:
+                q.task_done()
+                # Cooldown before processing the next request
+                if not q.empty():
+                    logger.debug(
+                        "Instagram queue: %d pending — waiting %ds before next request",
+                        q.qsize(),
+                        _INSTAGRAM_QUEUE_DELAY,
+                    )
+                await asyncio.sleep(_INSTAGRAM_QUEUE_DELAY)
+    except asyncio.CancelledError:
+        logger.info("Instagram queue worker shutting down")
+        # Cancel any remaining queued futures so callers don't hang
+        while not q.empty():
+            try:
+                pending_fut, _ = q.get_nowait()
+                pending_fut.cancel()
+                q.task_done()
+            except asyncio.QueueEmpty:
+                break
 
 
 async def queued_download_video(url: str) -> "MediaResult":
@@ -158,6 +174,13 @@ async def post_stop(application: Application):
     task = application.bot_data.get("truth_monitor_task")
     if task and not task.done():
         task.cancel()
+    ig_task = application.bot_data.get("ig_queue_worker")
+    if ig_task and not ig_task.done():
+        ig_task.cancel()
+        try:
+            await ig_task
+        except asyncio.CancelledError:
+            pass
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
