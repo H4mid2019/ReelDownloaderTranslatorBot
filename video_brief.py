@@ -344,16 +344,52 @@ def generate_video_brief(
                 if retry_candidate is not None:
                     retry_finish = getattr(retry_candidate, "finish_reason", None)
                     if retry_finish == types.FinishReason.MAX_TOKENS:
-                        logger.warning(
-                            "Condensed retry also hit MAX_TOKENS (model=%s).",
-                            model_name,
-                        )
-                        return {
-                            "error": (
-                                "⚠️ The video transcript is too long to process in one pass. "
-                                "Try a shorter clip or a model with a larger output window."
+                        # Escalate to full flash model which has a much larger
+                        # output window (~65K tokens vs ~8K for flash-lite).
+                        escalation_model = "gemini-2.5-flash"
+                        if model_name == escalation_model:
+                            # Already on the big model — nothing left to try.
+                            logger.warning(
+                                "Condensed retry also hit MAX_TOKENS (model=%s).",
+                                model_name,
                             )
-                        }
+                            return {
+                                "error": (
+                                    "⚠️ The video transcript is too long to process in one pass. "
+                                    "Try a shorter clip or a model with a larger output window."
+                                )
+                            }
+                        logger.warning(
+                            "Condensed retry hit MAX_TOKENS on %s. "
+                            "Escalating to %s.",
+                            model_name,
+                            escalation_model,
+                        )
+                        response = client.models.generate_content(
+                            model=escalation_model,
+                            contents=[uploaded_file, condensed_prompt],
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                response_json_schema=_BRIEF_RESPONSE_SCHEMA,
+                                temperature=0.2,
+                                max_output_tokens=65535,
+                            ),
+                        )
+                        esc_candidate = (response.candidates or [None])[0]
+                        if esc_candidate is not None:
+                            esc_finish = getattr(esc_candidate, "finish_reason", None)
+                            if esc_finish == types.FinishReason.MAX_TOKENS:
+                                logger.warning(
+                                    "Escalated model %s also hit MAX_TOKENS.",
+                                    escalation_model,
+                                )
+                                return {
+                                    "error": (
+                                        "⚠️ The video transcript is too long to process in one pass. "
+                                        "Try a shorter clip or a model with a larger output window."
+                                    )
+                                }
+                        model_name = escalation_model
 
         raw_text = (response.text or "").strip()
         if not raw_text:

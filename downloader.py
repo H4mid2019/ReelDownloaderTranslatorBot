@@ -11,6 +11,7 @@ import subprocess
 import json
 import logging
 import yt_dlp  # type: ignore[import-untyped]
+from yt_dlp.networking.impersonate import ImpersonateTarget
 import sys
 import shutil
 from typing import Any, List, Mapping, Optional
@@ -155,7 +156,7 @@ def get_yt_dlp_options(download_dir: str, cookies_path: Optional[str] = None) ->
     Note: username/password login is broken in current yt-dlp Instagram extractor.
     """
     ydl_opts = _base_ydl_opts(download_dir)
-    ydl_opts["impersonate"] = "chrome"  # Use curl-cffi impersonation
+    ydl_opts["impersonate"] = ImpersonateTarget.from_str("chrome-131")  # Use curl-cffi impersonation
     ydl_opts["http_headers"] = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -180,7 +181,7 @@ def get_mobile_headers_options(
 ) -> dict:
     """Get options with mobile user-agent (sometimes works better for Reels)."""
     ydl_opts = _base_ydl_opts(download_dir)
-    ydl_opts["impersonate"] = "chrome"
+    ydl_opts["impersonate"] = ImpersonateTarget.from_str("chrome-131")
     ydl_opts["http_headers"] = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
         "AppleWebKit/605.1.15 (KHTML, like Gecko) "
@@ -280,18 +281,10 @@ def _cleanup_temp_cookie(path: Optional[str]):
 def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
     import time
 
-    # List of public Cobalt mirrors to try
-    mirrors = [
-        "https://co.wuk.sh/api/json",
-        "https://cobalt-api.hyper.lol/api/json",
-        "https://api.clxxped.lol/api/json",
-        "https://cobalt.api.vve.best/api/json",
-        "https://api.cobalt.best/api/json",
-        "https://cobalt.api.timelessnesses.me/api/json",
-        "https://api-dl.cgm.rs/api/json",
-        "https://cobalt.synzr.space/api/json",
-        "https://api.co.rooot.gay/api/json",
-    ]
+    # Cobalt v7 mirrors are all shut down (Nov 2024).
+    # v10+ requires JWT auth. Keep the function signature for the call chain
+    # but return immediately — no working public mirrors available.
+    mirrors: list[str] = []
 
     for api_url in mirrors:
         try:
