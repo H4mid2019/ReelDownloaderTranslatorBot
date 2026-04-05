@@ -46,7 +46,9 @@ INSTAGRAM_SESSION_ID = os.getenv("INSTAGRAM_SESSION_ID")
 # Example: INSTAGRAM_SESSION_IDS=id1,id2,id3
 # If only INSTAGRAM_SESSION_ID is set, it is used as the single entry.
 _raw_session_ids = os.getenv("INSTAGRAM_SESSION_IDS", "")
-INSTAGRAM_SESSION_IDS: list[str] = [s.strip() for s in _raw_session_ids.split(",") if s.strip()]
+INSTAGRAM_SESSION_IDS: list[str] = [
+    s.strip() for s in _raw_session_ids.split(",") if s.strip()
+]
 if not INSTAGRAM_SESSION_IDS and INSTAGRAM_SESSION_ID:
     INSTAGRAM_SESSION_IDS = [INSTAGRAM_SESSION_ID]
 

@@ -31,6 +31,7 @@ from config import ENABLE_AI_CACHE, CACHE_TTL_DAYS, CACHE_DB_PATH
 from config import ADMIN_CHAT_ID, INSTAGRAM_COOKIES_FROM_BROWSER
 from cache import AICache, extract_post_id
 from downloader import (
+    MediaResult,
     download_video,
     detect_platform,
     check_instagram_cookie_health,
@@ -134,13 +135,11 @@ async def _ig_queue_worker() -> None:
                 break
 
 
-async def queued_download_video(url: str) -> "MediaResult":
+async def queued_download_video(url: str) -> MediaResult:
     """Enqueue an Instagram/Twitter download and wait for the result.
 
     Non-Instagram URLs are executed immediately in the thread-pool executor
     without going through the queue."""
-    from downloader import MediaResult  # noqa: F811 — local to avoid circular at module level
-
     platform = detect_platform(url)
     loop = asyncio.get_running_loop()
 
@@ -1207,7 +1206,13 @@ async def process_url(
                                 break
                             except RetryAfter as e:
                                 if attempt < 2:
-                                    await asyncio.sleep(e.retry_after + 1)
+                                    retry_after = e.retry_after
+                                    delay = (
+                                        retry_after.total_seconds()
+                                        if hasattr(retry_after, "total_seconds")
+                                        else float(retry_after)
+                                    ) + 1
+                                    await asyncio.sleep(delay)
                                 else:
                                     raise
 

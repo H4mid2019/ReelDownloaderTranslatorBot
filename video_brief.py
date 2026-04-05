@@ -360,8 +360,7 @@ def generate_video_brief(
                                 )
                             }
                         logger.warning(
-                            "Condensed retry hit MAX_TOKENS on %s. "
-                            "Escalating to %s.",
+                            "Condensed retry hit MAX_TOKENS on %s. Escalating to %s.",
                             model_name,
                             escalation_model,
                         )

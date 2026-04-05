@@ -24,9 +24,7 @@ if "SSLKEYLOGFILE" not in os.environ:
 from dataclasses import dataclass, field
 import time
 from config import (
-    INSTAGRAM_COOKIES_FILE,
     INSTAGRAM_COOKIES_FILES,
-    INSTAGRAM_SESSION_ID,
     INSTAGRAM_SESSION_IDS,
     INSTAGRAM_USERNAME,
     INSTAGRAM_COOKIES_FROM_BROWSER,
@@ -106,6 +104,7 @@ def get_session_count() -> int:
     """Return total number of auth credentials configured (cookie files + session IDs)."""
     with _rotation_lock:
         return len(_cookie_files) + len(_session_ids)
+
 
 try:
     import instaloader  # type: ignore[import-not-found,import-untyped]
@@ -241,7 +240,9 @@ def get_yt_dlp_options(download_dir: str, cookies_path: Optional[str] = None) ->
     Note: username/password login is broken in current yt-dlp Instagram extractor.
     """
     ydl_opts = _base_ydl_opts(download_dir)
-    ydl_opts["impersonate"] = ImpersonateTarget.from_str("chrome-131")  # Use curl-cffi impersonation
+    ydl_opts["impersonate"] = ImpersonateTarget.from_str(
+        "chrome-131"
+    )  # Use curl-cffi impersonation
     ydl_opts["http_headers"] = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -581,14 +582,11 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
         return MediaResult(
             post_url=url, platform="instagram", error="instaloader not installed"
         )
-    has_cookies_file = bool(
-        INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE)
-    )
-    if not get_active_session_id() and not has_cookies_file:
+    if not get_active_cookie_file() and not get_active_session_id():
         return MediaResult(
             post_url=url,
             platform="instagram",
-            error="INSTAGRAM_SESSION_ID or INSTAGRAM_COOKIES_FILE not configured",
+            error="No Instagram credentials configured (set INSTAGRAM_COOKIES_FILES or INSTAGRAM_SESSION_IDS)",
         )
 
     logger = logging.getLogger(__name__)
@@ -794,7 +792,7 @@ def check_instagram_cookie_health() -> bool:
         else:
             session.cookies.set(
                 "sessionid",
-                active_session,
+                str(active_session),
                 domain=".instagram.com",
                 path="/",
             )

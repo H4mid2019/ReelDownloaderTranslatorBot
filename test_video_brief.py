@@ -150,19 +150,17 @@ def test_generate_video_brief_max_tokens_finish_reason_returns_error(
             )
 
     fake_client = SimpleNamespace(files=FakeFiles(), models=FakeModels())
-    result = video_brief.generate_video_brief(
-        str(video_path), client=fake_client
-    )
+    result = video_brief.generate_video_brief(str(video_path), client=fake_client)
 
     assert result.get("error") is not None
-    assert "too long" in result["error"].lower() or "transcript" in result["error"].lower()
+    assert (
+        "too long" in result["error"].lower() or "transcript" in result["error"].lower()
+    )
     # Must NOT contain a parsed payload
     assert "source_language_code" not in result
 
 
-def test_generate_video_brief_stop_reason_parses_json_normally(
-    tmp_path, monkeypatch
-):
+def test_generate_video_brief_stop_reason_parses_json_normally(tmp_path, monkeypatch):
     """finish_reason=STOP (normal) must still parse the JSON response."""
     from google.genai import types as real_types
 

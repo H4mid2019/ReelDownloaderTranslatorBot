@@ -268,7 +268,9 @@ def _handle_gemini_error(e: Exception) -> str:
             "resource_exhausted",
         ]
     ):
-        return "⚠️ این ویدیو برای پردازش بسیار طولانی است. لطفاً ویدیوی کوتاه‌تری ارسال کنید."
+        return (
+            "⚠️ این ویدیو برای پردازش بسیار طولانی است. لطفاً ویدیوی کوتاه‌تری ارسال کنید."
+        )
 
     # Age-Restricted or Safety-Blocked Content
     if any(
