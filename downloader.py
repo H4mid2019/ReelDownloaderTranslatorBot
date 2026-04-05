@@ -14,6 +14,7 @@ import yt_dlp  # type: ignore[import-untyped]
 from yt_dlp.networking.impersonate import ImpersonateTarget
 import sys
 import shutil
+import threading
 from typing import Any, List, Mapping, Optional
 
 # Fix for PermissionError on Windows Python 3.12 SSL keylogging
@@ -22,7 +23,89 @@ if "SSLKEYLOGFILE" not in os.environ:
 
 from dataclasses import dataclass, field
 import time
-from config import INSTAGRAM_COOKIES_FILE, INSTAGRAM_SESSION_ID, INSTAGRAM_USERNAME
+from config import (
+    INSTAGRAM_COOKIES_FILE,
+    INSTAGRAM_COOKIES_FILES,
+    INSTAGRAM_SESSION_ID,
+    INSTAGRAM_SESSION_IDS,
+    INSTAGRAM_USERNAME,
+    INSTAGRAM_COOKIES_FROM_BROWSER,
+)
+
+# ── Cookie file + session ID rotation state ──────────────────────────────────
+# Both lists are mutable at runtime so Telegram commands can update without restart.
+_rotation_lock = threading.Lock()
+
+# Cookie file pool (full Netscape exports — most reliable)
+_cookie_files: List[str] = [f for f in INSTAGRAM_COOKIES_FILES if os.path.exists(f)]
+_cookie_file_idx: int = 0
+
+# Session ID pool (fallback when no cookie files are configured)
+_session_ids: List[str] = list(INSTAGRAM_SESSION_IDS)
+_session_idx: int = 0
+
+
+def get_active_cookie_file() -> Optional[str]:
+    """Return the currently active cookie file path, or None."""
+    with _rotation_lock:
+        if not _cookie_files:
+            return None
+        return _cookie_files[_cookie_file_idx % len(_cookie_files)]
+
+
+def rotate_cookie_file() -> Optional[str]:
+    """
+    Rotate to the next cookie file after the current one expired.
+    Returns the new active path, or None if only one file is configured.
+    """
+    global _cookie_file_idx
+    with _rotation_lock:
+        if len(_cookie_files) <= 1:
+            return None
+        _cookie_file_idx = (_cookie_file_idx + 1) % len(_cookie_files)
+        new_file = _cookie_files[_cookie_file_idx]
+        return new_file
+
+
+def get_active_session_id() -> Optional[str]:
+    """Return the currently active Instagram session ID."""
+    with _rotation_lock:
+        if not _session_ids:
+            return None
+        return _session_ids[_session_idx % len(_session_ids)]
+
+
+def rotate_session_id() -> Optional[str]:
+    """
+    Rotate to the next available session ID after the current one expired.
+    Returns the new active session ID, or None if only one ID is configured.
+    """
+    global _session_idx
+    with _rotation_lock:
+        if len(_session_ids) <= 1:
+            return None
+        _session_idx = (_session_idx + 1) % len(_session_ids)
+        return _session_ids[_session_idx]
+
+
+def set_session_id(session_id: str) -> None:
+    """
+    Update the active session ID at runtime (called by /setcookie Telegram command).
+    Inserts at position 0 so it becomes the first to try.
+    """
+    global _session_ids, _session_idx
+    with _rotation_lock:
+        if session_id in _session_ids:
+            _session_idx = _session_ids.index(session_id)
+        else:
+            _session_ids.insert(0, session_id)
+            _session_idx = 0
+
+
+def get_session_count() -> int:
+    """Return total number of auth credentials configured (cookie files + session IDs)."""
+    with _rotation_lock:
+        return len(_cookie_files) + len(_session_ids)
 
 try:
     import instaloader  # type: ignore[import-not-found,import-untyped]
@@ -100,18 +183,19 @@ def normalize_instagram_url(url: str) -> str:
 
 def _write_session_cookie_file() -> Optional[str]:
     """
-    Write a minimal Netscape-format cookies file from INSTAGRAM_SESSION_ID.
-    Returns the path to the temp file, or None if session ID is not configured.
+    Write a minimal Netscape-format cookies file from the active session ID.
+    Returns the path to the temp file, or None if no session ID is configured.
     The caller is responsible for deleting the file when done.
     """
-    if not INSTAGRAM_SESSION_ID:
+    session_id = get_active_session_id()
+    if not session_id:
         return None
     # Netscape cookie file format:
     # domain  include_subdomains  path  secure  expiry  name  value
     expiry = int(time.time()) + 60 * 60 * 24 * 365  # 1 year from now
     lines = [
         "# Netscape HTTP Cookie File\n",
-        f".instagram.com\tTRUE\t/\tTRUE\t{expiry}\tsessionid\t{INSTAGRAM_SESSION_ID}\n",
+        f".instagram.com\tTRUE\t/\tTRUE\t{expiry}\tsessionid\t{session_id}\n",
     ]
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix="_insta_cookies.txt", delete=False
@@ -124,11 +208,12 @@ def _write_session_cookie_file() -> Optional[str]:
 def _resolve_cookies_file() -> Optional[str]:
     """
     Return the best available cookies file path, or None.
-    Priority: configured file > session-ID-generated temp file.
+    Priority: active cookie file from rotation pool > session-ID-generated temp file.
     Caller must NOT delete a user-configured file; temp files must be cleaned up.
     """
-    if INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE):
-        return INSTAGRAM_COOKIES_FILE
+    active = get_active_cookie_file()
+    if active:
+        return active
     return _write_session_cookie_file()
 
 
@@ -152,7 +237,7 @@ def _base_ydl_opts(download_dir: str) -> dict:
 def get_yt_dlp_options(download_dir: str, cookies_path: Optional[str] = None) -> dict:
     """
     Get yt-dlp options with proper Instagram authentication.
-    Priority: cookies file > session ID > unauthenticated.
+    Priority: browser cookies > cookies file > session ID > unauthenticated.
     Note: username/password login is broken in current yt-dlp Instagram extractor.
     """
     ydl_opts = _base_ydl_opts(download_dir)
@@ -171,7 +256,9 @@ def get_yt_dlp_options(download_dir: str, cookies_path: Optional[str] = None) ->
         "Cache-Control": "max-age=0",
         "Upgrade-Insecure-Requests": "1",
     }
-    if cookies_path:
+    if INSTAGRAM_COOKIES_FROM_BROWSER:
+        ydl_opts["cookiesfrombrowser"] = (INSTAGRAM_COOKIES_FROM_BROWSER,)
+    elif cookies_path:
         ydl_opts["cookiefile"] = cookies_path
     return ydl_opts
 
@@ -189,7 +276,9 @@ def get_mobile_headers_options(
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
-    if cookies_path:
+    if INSTAGRAM_COOKIES_FROM_BROWSER:
+        ydl_opts["cookiesfrombrowser"] = (INSTAGRAM_COOKIES_FROM_BROWSER,)
+    elif cookies_path:
         ydl_opts["cookiefile"] = cookies_path
     return ydl_opts
 
@@ -269,13 +358,18 @@ def process_info_result(
     )
 
 
-def _cleanup_temp_cookie(path: Optional[str]):
-    """Delete a temp cookies file if it was auto-generated (not user-configured)."""
-    if path and path != INSTAGRAM_COOKIES_FILE:
-        try:
-            os.remove(path)
-        except Exception:
-            pass
+def _cleanup_temp_cookie(path: Optional[str]) -> None:
+    """Delete a temp cookies file if it was auto-generated (not a user-configured file)."""
+    if not path:
+        return
+    with _rotation_lock:
+        is_pool_file = path in _cookie_files
+    if is_pool_file:
+        return  # Never delete rotation pool files
+    try:
+        os.remove(path)
+    except Exception:
+        pass
 
 
 def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
@@ -398,7 +492,9 @@ def download_instagram_post_gallery_dl(
     # --write-metadata: creates .json files with caption/metadata
     # Note: --no-config is NOT supported on older gallery-dl versions; omit it.
     cmd = [gallery_dl_bin, "--dest", download_dir, "--write-metadata"]
-    if cookies_path:
+    if INSTAGRAM_COOKIES_FROM_BROWSER:
+        cmd.extend(["--cookies-from-browser", INSTAGRAM_COOKIES_FROM_BROWSER])
+    elif cookies_path:
         cmd.extend(["--cookies", cookies_path])
     cmd.append(url)
 
@@ -488,7 +584,7 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
     has_cookies_file = bool(
         INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE)
     )
-    if not INSTAGRAM_SESSION_ID and not has_cookies_file:
+    if not get_active_session_id() and not has_cookies_file:
         return MediaResult(
             post_url=url,
             platform="instagram",
@@ -529,12 +625,8 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
 
             expiry = int(time.time()) + 60 * 60 * 24 * 365
 
-            # Prefer full cookies file (all cookies = fewer 403s from Instagram)
-            cookies_file = (
-                INSTAGRAM_COOKIES_FILE
-                if (INSTAGRAM_COOKIES_FILE and os.path.exists(INSTAGRAM_COOKIES_FILE))
-                else None
-            )
+            # Prefer full cookies file from rotation pool (all cookies = fewer 403s)
+            cookies_file = get_active_cookie_file()
             if cookies_file:
                 from http.cookiejar import MozillaCookieJar
 
@@ -549,7 +641,8 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
                 )
             else:
                 # Fallback: inject session ID cookie only
-                if not INSTAGRAM_SESSION_ID:
+                active_session = get_active_session_id()
+                if not active_session:
                     return MediaResult(
                         post_url=url,
                         platform="instagram",
@@ -557,7 +650,7 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
                     )
                 cookie = requests.cookies.create_cookie(
                     name="sessionid",
-                    value=INSTAGRAM_SESSION_ID,
+                    value=active_session,
                     domain=".instagram.com",
                     path="/",
                     secure=True,
@@ -668,6 +761,55 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
         )
 
 
+def check_instagram_cookie_health() -> bool:
+    """
+    Returns True if Instagram authentication is valid, False if cookies are expired.
+    Uses a lightweight API request — does NOT download any media.
+    Returns True unconditionally when INSTAGRAM_COOKIES_FROM_BROWSER is set,
+    since browser cookies are always fresh.
+    """
+    if INSTAGRAM_COOKIES_FROM_BROWSER:
+        return True  # Browser manages freshness automatically
+
+    cookies_file = get_active_cookie_file()
+    active_session = get_active_session_id()
+    if not cookies_file and not active_session:
+        return False  # No auth configured at all
+
+    try:
+        import requests  # type: ignore[import-untyped]
+
+        session = requests.Session()
+        session.headers["User-Agent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+
+        if cookies_file:
+            from http.cookiejar import MozillaCookieJar
+
+            jar = MozillaCookieJar(cookies_file)
+            jar.load(ignore_discard=True, ignore_expires=True)
+            session.cookies.update(jar)
+        else:
+            session.cookies.set(
+                "sessionid",
+                active_session,
+                domain=".instagram.com",
+                path="/",
+            )
+
+        resp = session.get(
+            "https://www.instagram.com/api/v1/accounts/current_user/?edit=true",
+            timeout=10,
+            allow_redirects=False,
+        )
+        # 200 → valid session; 3xx redirect to /accounts/login/ → expired
+        return resp.status_code == 200
+    except Exception:
+        return False  # Treat network errors conservatively as "unknown"
+
+
 def download_video(url: str) -> MediaResult:
     """
     Download video from Instagram Reels/TV, X/Twitter, or YouTube Shorts.
@@ -761,6 +903,24 @@ def download_video(url: str) -> MediaResult:
             return res
 
         last_error = res.error or last_error
+
+        # Auto-rotate to next credential if auth failure detected
+        _is_auth_error = (
+            "login" in last_error.lower()
+            or "redirect" in last_error.lower()
+            or "400" in last_error
+            or "401" in last_error
+            or "403" in last_error
+        )
+        if _is_auth_error and not INSTAGRAM_COOKIES_FROM_BROWSER:
+            rotated = rotate_cookie_file() or rotate_session_id()
+            if rotated:
+                logger.warning(
+                    f"Instagram auth failure — rotated to next credential: {rotated!r}"
+                )
+                # Rebuild cookies with the rotated credential for future requests
+                _cleanup_temp_cookie(cookies_path)
+                cookies_path = _resolve_cookies_file()
 
     # Method 4: Twitter-specific fallback (vxtwitter)
     if platform == "twitter":

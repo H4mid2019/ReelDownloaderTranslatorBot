@@ -33,6 +33,7 @@ Simply send or forward any supported link to the bot. It will automatically dete
 | `/db <url>` | Detailed source-language transcript + summary brief |
 | `/chatid` | Get the current chat ID |
 | `/clearcache` | Clear the AI response cache |
+| `/setcookie <id>` | *(Admin only)* Update Instagram session ID without SSH or restart |
 
 ## ✨ Features
 
@@ -111,12 +112,63 @@ docker exec -it local-llm ollama pull qwen2.5:3b
 
 ## 🍪 Instagram Authentication
 
-**Image posts/carousels require cookies to bypass some restrictions.**
+Instagram requires valid session cookies to download posts. The bot supports multiple methods with automatic rotation — when one session expires, it silently switches to the next.
 
-1. Login to Instagram in Chrome
-1. Install "EditThisCookie" extension
-1. Export cookies in Netscape format
-1. Save as `instagram_cookies.txt` in the bot directory
-1. Set `INSTAGRAM_COOKIES_FILE=instagram_cookies.txt` in `.env`
+### Method 1 — Single cookie file *(simplest)*
+
+1. Log into Instagram in Chrome
+2. Install the "EditThisCookie" extension
+3. Export cookies in Netscape format → save as `instagram_cookies.txt`
+4. Upload the file to your server
+5. Set in `.env`:
+
+   ```env
+   INSTAGRAM_COOKIES_FILE=instagram_cookies.txt
+   ```
+
+### Method 2 — Multiple cookie files with rotation *(recommended for servers)*
+
+Export a full Netscape cookie file from each browser/profile (Chrome, Firefox, Chrome Profile 2) — all can use the **same Instagram account**. Each browser gets its own independent session, multiplying your uptime before any manual refresh is needed.
+
+```env
+INSTAGRAM_COOKIES_FILES=cookies1.txt,cookies2.txt,cookies3.txt
+```
+
+When one file's session expires the bot automatically rotates to the next. A Telegram alert is sent to `ADMIN_CHAT_ID` when the entire pool is exhausted.
+
+### Method 3 — Session ID rotation *(lightweight alternative)*
+
+Copy just the `sessionid` value from browser DevTools (Application → Cookies → `sessionid`) for each session:
+
+```env
+INSTAGRAM_SESSION_IDS=id1,id2,id3
+```
+
+### Refreshing cookies without SSH — `/setcookie`
+
+Once the bot is running, you can push a fresh session ID to it directly from Telegram:
+
+```text
+/setcookie <your_new_sessionid>
+```
+
+The bot will:
+
+- Delete your message immediately (to avoid leaking the token in chat history)
+- Update the active session in memory
+- Persist the new ID to `.env` so it survives restarts
+- Confirm with a health check result
+
+This command is restricted to `ADMIN_CHAT_ID`. Get your chat ID via `/chatid` in a private chat with the bot.
+
+### Expiry alerts
+
+Set `ADMIN_CHAT_ID` in `.env` (falls back to `TRUTH_ALERT_CHAT_ID` if not set). The bot checks cookie health every 6 hours and sends a Telegram notification when the session pool is expired, before users start seeing errors.
+
+```env
+ADMIN_CHAT_ID=your_personal_chat_id
+```
+
+> **Note:** `INSTAGRAM_COOKIES_FROM_BROWSER` (auto-extract from Chrome/Firefox) is available but **only works on desktop machines with a GUI browser installed** — not on headless servers (Ubuntu ARM, Oracle Cloud, VPS, etc.).
 
 ⚠️ **OPEN-SOURCE** - Non-commercial use only. See LICENSE.

@@ -28,8 +28,15 @@ from config import (
     RESPONSE_LANGUAGE,
 )
 from config import ENABLE_AI_CACHE, CACHE_TTL_DAYS, CACHE_DB_PATH
+from config import ADMIN_CHAT_ID, INSTAGRAM_COOKIES_FROM_BROWSER
 from cache import AICache, extract_post_id
-from downloader import download_video, detect_platform
+from downloader import (
+    download_video,
+    detect_platform,
+    check_instagram_cookie_health,
+    set_session_id,
+    get_session_count,
+)
 from transcriber import Transcriber
 from translator import Translator
 from truth_monitor import monitor_loop
@@ -150,6 +157,69 @@ async def queued_download_video(url: str) -> "MediaResult":
     return await fut
 
 
+_COOKIE_CHECK_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
+
+
+async def instagram_cookie_health_loop(application: Application) -> None:
+    """
+    Background task: checks Instagram cookie validity every 6 hours.
+    Sends a Telegram alert to ADMIN_CHAT_ID when cookies have expired so
+    the operator can refresh them before users hit failures.
+    Skipped entirely when INSTAGRAM_COOKIES_FROM_BROWSER is set (browser
+    manages freshness automatically).
+    """
+    if INSTAGRAM_COOKIES_FROM_BROWSER:
+        logger.info(
+            "Instagram cookie health check disabled — "
+            "using browser cookies (always fresh)."
+        )
+        return
+
+    if not ADMIN_CHAT_ID:
+        logger.info(
+            "Instagram cookie health check running but ADMIN_CHAT_ID not set — "
+            "alerts will only appear in logs."
+        )
+
+    already_alerted = False  # Avoid spamming repeated alerts while still broken
+
+    while True:
+        await asyncio.sleep(_COOKIE_CHECK_INTERVAL_SECONDS)
+        healthy = await asyncio.get_event_loop().run_in_executor(
+            None, check_instagram_cookie_health
+        )
+
+        if healthy:
+            if already_alerted:
+                logger.info("Instagram cookies restored — session is valid again.")
+                already_alerted = False
+            else:
+                logger.info("Instagram cookie health check: OK.")
+        else:
+            logger.warning("Instagram cookie health check: EXPIRED or invalid.")
+            if not already_alerted:
+                already_alerted = True
+                msg = (
+                    "⚠️ *Instagram session expired*\n\n"
+                    "The bot cannot download Instagram posts until you refresh the cookies.\n\n"
+                    "*How to fix:*\n"
+                    "1\\. Open instagram\\.com in Chrome and ensure you are logged in\n"
+                    "2\\. In DevTools → Application → Cookies → `sessionid` → copy value\n"
+                    "3\\. Update `INSTAGRAM_SESSION_ID` in your \\.env and restart the bot\n\n"
+                    "_Or set `INSTAGRAM_COOKIES_FROM_BROWSER=chrome` in \\.env to "
+                    "never have this problem again\\._"
+                )
+                if ADMIN_CHAT_ID:
+                    try:
+                        await application.bot.send_message(
+                            chat_id=ADMIN_CHAT_ID,
+                            text=msg,
+                            parse_mode="MarkdownV2",
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to send cookie expiry alert: {e}")
+
+
 async def post_init(application: Application):
     """Start background tasks after bot initialization."""
     # Purge expired cache entries at startup
@@ -167,13 +237,16 @@ async def post_init(application: Application):
     # Start Instagram download queue worker
     ig_task = asyncio.create_task(_ig_queue_worker())
     application.bot_data["ig_queue_worker"] = ig_task
+    cookie_task = asyncio.create_task(instagram_cookie_health_loop(application))
+    application.bot_data["cookie_health_task"] = cookie_task
 
 
 async def post_stop(application: Application):
     """Clean up background tasks before bot shutdown."""
-    task = application.bot_data.get("truth_monitor_task")
-    if task and not task.done():
-        task.cancel()
+    for key in ("truth_monitor_task", "cookie_health_task"):
+        task = application.bot_data.get(key)
+        if task and not task.done():
+            task.cancel()
     ig_task = application.bot_data.get("ig_queue_worker")
     if ig_task and not ig_task.done():
         ig_task.cancel()
@@ -247,6 +320,96 @@ async def chatid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• **Title:** {chat_title}\n\n"
         f"You can copy the ID above and paste it into your configuration."
     )
+
+
+async def setcookie_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin-only command: /setcookie <sessionid>
+    Updates the active Instagram session ID at runtime — no SSH or restart needed.
+    Also persists to .env so the new ID survives a restart.
+    """
+    if not update.message:
+        return
+
+    # Admin-only guard
+    chat_id = str(update.effective_chat.id) if update.effective_chat else ""
+    if ADMIN_CHAT_ID and chat_id != str(ADMIN_CHAT_ID):
+        await update.message.reply_text("❌ This command is admin-only.")
+        return
+
+    args = context.args or []
+    if not args:
+        pool = get_session_count()
+        await update.message.reply_text(
+            f"Usage: `/setcookie <sessionid>`\n"
+            f"Current pool size: {pool} session ID(s)\n\n"
+            "1\\. Open instagram\\.com in your phone/desktop browser\n"
+            "2\\. DevTools → Application → Cookies → `sessionid` → copy\n"
+            "3\\. Send `/setcookie <paste here>`",
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    new_id = args[0].strip()
+    # Basic sanity: session IDs are alphanumeric + % and _
+    if not re.match(r"^[\w%]+$", new_id):
+        await update.message.reply_text(
+            "❌ Invalid session ID format. Check the value and try again."
+        )
+        return
+
+    # Delete the message to avoid leaking the session ID in chat history
+    try:
+        await update.message.delete()
+    except Exception:
+        pass  # No delete permission — not critical
+
+    set_session_id(new_id)
+
+    # Persist to .env so it survives restarts
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            if re.search(r"^INSTAGRAM_SESSION_ID=", content, re.MULTILINE):
+                content = re.sub(
+                    r"^INSTAGRAM_SESSION_ID=.*$",
+                    f"INSTAGRAM_SESSION_ID={new_id}",
+                    content,
+                    flags=re.MULTILINE,
+                )
+            else:
+                content += f"\nINSTAGRAM_SESSION_ID={new_id}\n"
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:
+            logger.warning(f"Could not persist session ID to .env: {e}")
+
+    # Verify the new cookie works
+    healthy = await asyncio.get_event_loop().run_in_executor(
+        None, check_instagram_cookie_health
+    )
+
+    if healthy:
+        pool = get_session_count()
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ *Session ID updated and verified*\n"
+                f"Instagram auth is working\\. Pool size: {pool}"
+            ),
+            parse_mode="MarkdownV2",
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "⚠️ *Session ID saved but health check failed*\n"
+                "The ID may be invalid — double-check the value\\."
+            ),
+            parse_mode="MarkdownV2",
+        )
 
 
 async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1443,6 +1606,7 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("chatid", chatid_command))
+    application.add_handler(CommandHandler("setcookie", setcookie_command))
     application.add_handler(CommandHandler("clearcache", clearcache_command))
     application.add_handler(CommandHandler("d", download_command))
     application.add_handler(CommandHandler("dl", download_local_command))

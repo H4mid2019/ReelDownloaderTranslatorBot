@@ -25,12 +25,43 @@ TRUTH_RSS_URL = os.getenv("TRUTH_RSS_URL", "https://trumpstruth.org/feed")
 # Get cookies from browser and save as Netscape format (.txt)
 INSTAGRAM_COOKIES_FILE = os.getenv("INSTAGRAM_COOKIES_FILE")
 
+# Multiple cookie files for rotation (comma-separated paths).
+# Export a full Netscape cookie file from each browser/profile, upload all to the server.
+# The bot rotates to the next file automatically when the current one expires.
+# Example: INSTAGRAM_COOKIES_FILES=cookies1.txt,cookies2.txt,cookies3.txt
+# Falls back to INSTAGRAM_COOKIES_FILE if not set.
+_raw_cookie_files = os.getenv("INSTAGRAM_COOKIES_FILES", "")
+INSTAGRAM_COOKIES_FILES: list[str] = [
+    s.strip() for s in _raw_cookie_files.split(",") if s.strip()
+]
+if not INSTAGRAM_COOKIES_FILES and INSTAGRAM_COOKIES_FILE:
+    INSTAGRAM_COOKIES_FILES = [INSTAGRAM_COOKIES_FILE]
+
 # Instagram session ID (alternative to full cookies file — easier to obtain)
 # Get from browser DevTools > Application > Cookies > instagram.com > sessionid
 INSTAGRAM_SESSION_ID = os.getenv("INSTAGRAM_SESSION_ID")
 
+# Multiple session IDs for rotation (comma-separated).
+# The bot tries each in order; when one expires it automatically switches to the next.
+# Example: INSTAGRAM_SESSION_IDS=id1,id2,id3
+# If only INSTAGRAM_SESSION_ID is set, it is used as the single entry.
+_raw_session_ids = os.getenv("INSTAGRAM_SESSION_IDS", "")
+INSTAGRAM_SESSION_IDS: list[str] = [s.strip() for s in _raw_session_ids.split(",") if s.strip()]
+if not INSTAGRAM_SESSION_IDS and INSTAGRAM_SESSION_ID:
+    INSTAGRAM_SESSION_IDS = [INSTAGRAM_SESSION_ID]
+
+# Auto-extract cookies directly from a browser (no manual export needed).
+# Set to: "chrome", "firefox", "edge", "safari", "chromium", or "brave".
+# ONLY works on machines with a GUI browser installed and Instagram logged in.
+# NOT suitable for headless servers (Ubuntu ARM, Oracle Cloud, etc.).
+INSTAGRAM_COOKIES_FROM_BROWSER = os.getenv("INSTAGRAM_COOKIES_FROM_BROWSER")
+
 # Legacy credentials (broken with current yt-dlp Instagram extractor — use cookies instead)
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
+
+# Admin Telegram chat ID for system alerts (e.g. expired Instagram cookies).
+# Falls back to TRUTH_ALERT_CHAT_ID if not set.
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") or os.getenv("TRUTH_ALERT_CHAT_ID")
 
 # Model configuration (can be changed via .env)
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3")
