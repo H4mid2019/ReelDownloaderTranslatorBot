@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import asyncio
 from telegram import Update, InputMediaPhoto, InputMediaVideo
-from telegram.error import NetworkError, TimedOut
+from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -1036,9 +1036,17 @@ async def process_url(
                                 )
                             except Exception:
                                 pass
-                        await update.message.reply_media_group(
-                            media=group, read_timeout=120, write_timeout=120
-                        )
+                        for attempt in range(3):
+                            try:
+                                await update.message.reply_media_group(
+                                    media=group, read_timeout=120, write_timeout=120
+                                )
+                                break
+                            except RetryAfter as e:
+                                if attempt < 2:
+                                    await asyncio.sleep(e.retry_after + 1)
+                                else:
+                                    raise
 
                 if status_msg:
                     try:
