@@ -916,7 +916,7 @@ def download_instagram_hikerapi(url: str, download_dir: str) -> MediaResult:
         import requests  # type: ignore[import-untyped]
 
         resp = requests.get(
-            "https://hikerapi.com/api/v1/media/by/url",
+            "https://api.hikerapi.com/v1/media/by/url",
             params={"url": url},
             headers={"x-access-key": HIKERAPI_KEY, "Accept": "application/json"},
             timeout=30,
