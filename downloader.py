@@ -808,7 +808,7 @@ def download_instagram_cobalt_local(url: str, download_dir: str) -> MediaResult:
 
         resp = requests.post(
             COBALT_LOCAL_URL.rstrip("/") + "/",
-            json={"url": url},
+            json={"url": url, "alwaysProxy": True, "videoQuality": "1080"},
             headers={"Accept": "application/json", "Content-Type": "application/json"},
             timeout=30,
         )
