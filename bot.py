@@ -28,7 +28,7 @@ from config import (
     RESPONSE_LANGUAGE,
 )
 from config import ENABLE_AI_CACHE, CACHE_TTL_DAYS, CACHE_DB_PATH
-from config import ADMIN_CHAT_ID, INSTAGRAM_COOKIES_FROM_BROWSER
+from config import ADMIN_CHAT_ID, INSTAGRAM_COOKIES_FROM_BROWSER, COBALT_LOCAL_URL
 from cache import AICache, extract_post_id
 from downloader import (
     MediaResult,
@@ -184,6 +184,23 @@ async def instagram_cookie_health_loop(application: Application) -> None:
 
     while True:
         await asyncio.sleep(_COOKIE_CHECK_INTERVAL_SECONDS)
+
+        # ── Cobalt local health ping ──────────────────────────────────────────
+        if COBALT_LOCAL_URL:
+            try:
+                import requests  # type: ignore[import-untyped]
+
+                ping = requests.get(COBALT_LOCAL_URL.rstrip("/") + "/", timeout=5)
+                if ping.status_code < 500:
+                    logger.info("Cobalt local health check: OK.")
+                else:
+                    logger.warning(
+                        f"Cobalt local health check: HTTP {ping.status_code}"
+                    )
+            except Exception as cobalt_err:
+                logger.warning(f"Cobalt local health check: unreachable — {cobalt_err}")
+
+        # ── Instagram cookie health check ─────────────────────────────────────
         healthy = await asyncio.get_event_loop().run_in_executor(
             None, check_instagram_cookie_health
         )
@@ -200,13 +217,12 @@ async def instagram_cookie_health_loop(application: Application) -> None:
                 already_alerted = True
                 msg = (
                     "⚠️ *Instagram session expired*\n\n"
-                    "The bot cannot download Instagram posts until you refresh the cookies.\n\n"
+                    "The bot cannot download Instagram posts until you refresh the cookies\\.\n\n"
                     "*How to fix:*\n"
-                    "1\\. Open instagram\\.com in Chrome and ensure you are logged in\n"
-                    "2\\. In DevTools → Application → Cookies → `sessionid` → copy value\n"
-                    "3\\. Update `INSTAGRAM_SESSION_ID` in your \\.env and restart the bot\n\n"
-                    "_Or set `INSTAGRAM_COOKIES_FROM_BROWSER=chrome` in \\.env to "
-                    "never have this problem again\\._"
+                    "1\\. On the server: `.venv/bin/instaloader --login <dummy_user>`\n"
+                    "2\\. Set `INSTALOADER_SESSION_USER=<dummy_user>` in \\.env\n"
+                    "3\\. Or use `/setcookie <sessionid>` right here in Telegram\n\n"
+                    "_Tip: if Cobalt local is running, public Reels still work without cookies\\._"
                 )
                 if ADMIN_CHAT_ID:
                     try:

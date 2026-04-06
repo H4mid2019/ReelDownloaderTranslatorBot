@@ -65,6 +65,27 @@ INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
 # Falls back to TRUTH_ALERT_CHAT_ID if not set.
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") or os.getenv("TRUTH_ALERT_CHAT_ID")
 
+# ── Phase 1: Cobalt self-hosted ───────────────────────────────────────────────
+# Local Cobalt instance URL. When set, tried FIRST — no cookies needed for public content.
+# Deploy: docker run -d --name cobalt --restart unless-stopped \
+#   -p 127.0.0.1:9000:9000 -e API_URL=http://localhost:9000 ghcr.io/imputnet/cobalt:10
+# Example: COBALT_LOCAL_URL=http://localhost:9000
+COBALT_LOCAL_URL = os.getenv("COBALT_LOCAL_URL", "")
+
+# ── Phase 2: Instaloader session file ────────────────────────────────────────
+# Session files are far longer-lived than Netscape cookie files (~weeks vs ~hours).
+# IMPORTANT: Generate the session ON THE SERVER so Instagram binds it to the server IP:
+#   .venv/bin/instaloader --login <dummy_username>
+# Use a DEDICATED DUMMY ACCOUNT — never your main Instagram account.
+INSTALOADER_SESSION_USER = os.getenv("INSTALOADER_SESSION_USER", "")
+# Optional: override session file path. Default: ~/.config/instaloader/session-{user}
+INSTALOADER_SESSION_FILE = os.getenv("INSTALOADER_SESSION_FILE", "")
+
+# ── Phase 3: HikerAPI (paid fallback) ────────────────────────────────────────
+# Commercial REST API backed by instagrapi with residential proxies. ~$0.001/request.
+# https://hikerapi.com — used after instaloader, before gallery-dl.
+HIKERAPI_KEY = os.getenv("HIKERAPI_KEY", "")
+
 # Model configuration (can be changed via .env)
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3")
 TRANSLATION_MODEL = os.getenv("TRANSLATION_MODEL", "llama-3.3-70b-versatile")

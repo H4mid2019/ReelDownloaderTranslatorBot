@@ -28,6 +28,10 @@ from config import (
     INSTAGRAM_SESSION_IDS,
     INSTAGRAM_USERNAME,
     INSTAGRAM_COOKIES_FROM_BROWSER,
+    COBALT_LOCAL_URL,
+    INSTALOADER_SESSION_USER,
+    INSTALOADER_SESSION_FILE,
+    HIKERAPI_KEY,
 )
 
 # ── Cookie file + session ID rotation state ──────────────────────────────────
@@ -609,7 +613,7 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
                 )
             shortcode = m.group(2)
 
-            # Build an Instaloader instance and inject our session cookies
+            # Build an Instaloader instance
             L = instaloader.Instaloader(
                 download_videos=True,
                 download_video_thumbnails=False,
@@ -621,43 +625,69 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
             )
             import requests  # instaloader uses requests under the hood
 
-            expiry = int(time.time()) + 60 * 60 * 24 * 365
-
-            # Prefer full cookies file from rotation pool (all cookies = fewer 403s)
-            cookies_file = get_active_cookie_file()
-            if cookies_file:
-                from http.cookiejar import MozillaCookieJar
-
-                jar = MozillaCookieJar(cookies_file)
-                jar.load(ignore_discard=True, ignore_expires=True)
-                for c in jar:
-                    L.context._session.cookies.set(
-                        c.name, c.value, domain=c.domain, path=c.path
-                    )  # type: ignore[attr-defined]
-                logger.debug(
-                    f"instaloader: loaded {len(list(jar))} cookies from {cookies_file}"
+            # ── Auth priority: session file > cookie pool > session ID ────────
+            # Phase 2: native instaloader session file (weeks-long lifetime)
+            _session_file = INSTALOADER_SESSION_FILE or (
+                os.path.expanduser(
+                    f"~/.config/instaloader/session-{INSTALOADER_SESSION_USER}"
                 )
-            else:
-                # Fallback: inject session ID cookie only
-                active_session = get_active_session_id()
-                if not active_session:
-                    return MediaResult(
-                        post_url=url,
-                        platform="instagram",
-                        error="No cookies configured (set INSTAGRAM_COOKIES_FILE or INSTAGRAM_SESSION_ID)",
+                if INSTALOADER_SESSION_USER
+                else ""
+            )
+            if (
+                _session_file
+                and os.path.exists(_session_file)
+                and INSTALOADER_SESSION_USER
+            ):
+                try:
+                    L.load_session_from_file(INSTALOADER_SESSION_USER, _session_file)
+                    logger.debug(
+                        f"instaloader: loaded session file for '{INSTALOADER_SESSION_USER}'"
                     )
-                cookie = requests.cookies.create_cookie(
-                    name="sessionid",
-                    value=active_session,
-                    domain=".instagram.com",
-                    path="/",
-                    secure=True,
-                    expires=expiry,
-                )
-                L.context._session.cookies.set_cookie(cookie)  # type: ignore[attr-defined]
+                except Exception as e:
+                    logger.warning(
+                        f"instaloader: session file load failed ({e}), falling back to cookies"
+                    )
+                    _session_file = ""  # fall through to cookie injection
 
-            # Signal to instaloader that we are logged in so it skips anonymous-only paths
-            L.context.username = INSTAGRAM_USERNAME or "user"  # type: ignore[attr-defined]
+            if not (_session_file and os.path.exists(_session_file)):
+                # Fallback: inject cookies from rotation pool
+                expiry = int(time.time()) + 60 * 60 * 24 * 365
+                cookies_file = get_active_cookie_file()
+                if cookies_file:
+                    from http.cookiejar import MozillaCookieJar
+
+                    jar = MozillaCookieJar(cookies_file)
+                    jar.load(ignore_discard=True, ignore_expires=True)
+                    for c in jar:
+                        L.context._session.cookies.set(
+                            c.name, c.value, domain=c.domain, path=c.path
+                        )  # type: ignore[attr-defined]
+                    logger.debug(
+                        f"instaloader: injected {len(list(jar))} cookies from {cookies_file}"
+                    )
+                else:
+                    active_session = get_active_session_id()
+                    if not active_session:
+                        return MediaResult(
+                            post_url=url,
+                            platform="instagram",
+                            error="No credentials configured (set INSTALOADER_SESSION_USER, INSTAGRAM_COOKIES_FILES, or INSTAGRAM_SESSION_IDS)",
+                        )
+                    cookie = requests.cookies.create_cookie(
+                        name="sessionid",
+                        value=active_session,
+                        domain=".instagram.com",
+                        path="/",
+                        secure=True,
+                        expires=expiry,
+                    )
+                    L.context._session.cookies.set_cookie(cookie)  # type: ignore[attr-defined]
+
+            # Signal to instaloader that we are logged in
+            L.context.username = (
+                INSTALOADER_SESSION_USER or INSTAGRAM_USERNAME or "user"
+            )  # type: ignore[attr-defined]
 
             post = instaloader.Post.from_shortcode(L.context, shortcode)
             caption = post.caption or ""
@@ -759,6 +789,226 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
         )
 
 
+def download_instagram_cobalt_local(url: str, download_dir: str) -> MediaResult:
+    """
+    Phase 1: Self-hosted Cobalt instance — cookie-free, highest priority.
+    Calls the local Cobalt API (bound to 127.0.0.1) and downloads the media.
+    Handles single media (tunnel/redirect/stream) and carousels (picker).
+    """
+    if not COBALT_LOCAL_URL:
+        return MediaResult(
+            post_url=url, platform="instagram", error="Cobalt local not configured"
+        )
+
+    logger = logging.getLogger(__name__)
+    logger.info(f"Trying Cobalt local ({COBALT_LOCAL_URL}) for: {url}")
+
+    try:
+        import requests  # type: ignore[import-untyped]
+
+        resp = requests.post(
+            COBALT_LOCAL_URL.rstrip("/") + "/",
+            json={"url": url},
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            timeout=30,
+        )
+        data: dict = resp.json()
+    except Exception as e:
+        return MediaResult(
+            post_url=url, platform="instagram", error=f"Cobalt local API error: {e}"
+        )
+
+    status = data.get("status", "")
+    if status == "error" or status == "rate-limit":
+        return MediaResult(
+            post_url=url,
+            platform="instagram",
+            error=f"Cobalt local: {data.get('error', {}).get('code', status)}",
+        )
+
+    # Collect media URLs — v10 uses "tunnel", older uses "stream"; both have "redirect"
+    urls_to_download: List[str] = []
+    if status in ("tunnel", "stream", "redirect") and data.get("url"):
+        urls_to_download = [data["url"]]
+    elif status == "picker":
+        urls_to_download = [
+            item["url"] for item in data.get("picker", []) if item.get("url")
+        ]
+
+    if not urls_to_download:
+        return MediaResult(
+            post_url=url,
+            platform="instagram",
+            error=f"Cobalt local: unexpected status '{status}'",
+        )
+
+    file_paths: List[str] = []
+    file_size_bytes = 0
+    has_video = False
+
+    try:
+        import requests  # already imported above but needed in scope
+
+        for idx, media_url in enumerate(urls_to_download):
+            # Detect extension from URL or content-type
+            ext = ".mp4" if any(x in media_url for x in (".mp4", "video")) else ".jpg"
+            out_path = os.path.join(
+                download_dir, f"cobalt_local_{int(time.time())}_{idx}{ext}"
+            )
+            dl_resp = requests.get(media_url, stream=True, timeout=60)
+            content_type = dl_resp.headers.get("content-type", "")
+            if "video" in content_type:
+                ext = ".mp4"
+                out_path = out_path.replace(".jpg", ".mp4")
+                has_video = True
+            with open(out_path, "wb") as f:
+                for chunk in dl_resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                file_paths.append(out_path)
+                file_size_bytes += os.path.getsize(out_path)
+    except Exception as e:
+        return MediaResult(
+            post_url=url,
+            platform="instagram",
+            error=f"Cobalt local download error: {e}",
+        )
+
+    if not file_paths:
+        return MediaResult(
+            post_url=url,
+            platform="instagram",
+            error="Cobalt local: no files downloaded",
+        )
+
+    file_paths.sort()
+    logger.info(
+        f"Cobalt local: downloaded {len(file_paths)} file(s), {file_size_bytes / 1024 / 1024:.1f}MB"
+    )
+    return MediaResult(
+        post_url=url,
+        platform="instagram",
+        media_type="gallery"
+        if len(file_paths) > 1
+        else ("video" if has_video else "photo"),
+        file_path=file_paths[0],
+        file_paths=file_paths,
+        file_size_bytes=file_size_bytes,
+        error=None,
+    )
+
+
+def download_instagram_hikerapi(url: str, download_dir: str) -> MediaResult:
+    """
+    Phase 3: HikerAPI paid fallback — residential proxies, no cookie file needed.
+    Used after instaloader, before gallery-dl. Skipped silently if HIKERAPI_KEY is empty.
+    Docs: https://hikerapi.com
+    """
+    if not HIKERAPI_KEY:
+        return MediaResult(
+            post_url=url, platform="instagram", error="HikerAPI key not configured"
+        )
+
+    logger = logging.getLogger(__name__)
+    logger.info(f"Trying HikerAPI for: {url}")
+
+    try:
+        import requests  # type: ignore[import-untyped]
+
+        resp = requests.get(
+            "https://hikerapi.com/api/v1/media/by/url",
+            params={"url": url},
+            headers={"x-access-key": HIKERAPI_KEY, "Accept": "application/json"},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            return MediaResult(
+                post_url=url,
+                platform="instagram",
+                error=f"HikerAPI HTTP {resp.status_code}: {resp.text[:200]}",
+            )
+        data = resp.json()
+    except Exception as e:
+        return MediaResult(
+            post_url=url, platform="instagram", error=f"HikerAPI error: {e}"
+        )
+
+    media_type_id = data.get("media_type")  # 1=photo, 2=video, 8=album
+    caption = data.get("caption_text") or data.get("caption") or ""
+
+    # Collect (url, is_video) pairs
+    items: List[tuple[str, bool]] = []
+    if media_type_id == 8:  # carousel / album
+        for res in data.get("resources", []):
+            if res.get("video_url"):
+                items.append((res["video_url"], True))
+            elif res.get("thumbnail_url"):
+                items.append((res["thumbnail_url"], False))
+    elif media_type_id == 2 and data.get("video_url"):
+        items = [(data["video_url"], True)]
+    elif data.get("thumbnail_url"):
+        items = [(data["thumbnail_url"], False)]
+
+    if not items:
+        return MediaResult(
+            post_url=url,
+            platform="instagram",
+            error="HikerAPI: no media URLs in response",
+        )
+
+    try:
+        import requests as req  # type: ignore[import-untyped]
+
+        file_paths: List[str] = []
+        file_size_bytes = 0
+        has_video = False
+        for idx, (media_url, is_vid) in enumerate(items):
+            ext = ".mp4" if is_vid else ".jpg"
+            out_path = os.path.join(
+                download_dir, f"hiker_{int(time.time())}_{idx}{ext}"
+            )
+            dl = req.get(
+                media_url,
+                stream=True,
+                timeout=60,
+                headers={"Referer": "https://www.instagram.com/"},
+            )
+            with open(out_path, "wb") as f:
+                for chunk in dl.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                file_paths.append(out_path)
+                file_size_bytes += os.path.getsize(out_path)
+                if is_vid:
+                    has_video = True
+    except Exception as e:
+        return MediaResult(
+            post_url=url, platform="instagram", error=f"HikerAPI download error: {e}"
+        )
+
+    if not file_paths:
+        return MediaResult(
+            post_url=url, platform="instagram", error="HikerAPI: no files saved"
+        )
+
+    file_paths.sort()
+    logger.info(
+        f"HikerAPI: downloaded {len(file_paths)} file(s), {file_size_bytes / 1024 / 1024:.1f}MB"
+    )
+    return MediaResult(
+        post_url=url,
+        platform="instagram",
+        media_type="gallery"
+        if len(file_paths) > 1
+        else ("video" if has_video else "photo"),
+        file_path=file_paths[0],
+        file_paths=file_paths,
+        file_size_bytes=file_size_bytes,
+        caption=caption,
+        error=None,
+    )
+
+
 def check_instagram_cookie_health() -> bool:
     """
     Returns True if Instagram authentication is valid, False if cookies are expired.
@@ -833,6 +1083,14 @@ def download_video(url: str) -> MediaResult:
     cookies_path = _resolve_cookies_file() if platform == "instagram" else None
     logger = logging.getLogger(__name__)
 
+    # Method 0: Cobalt self-hosted (cookie-free, highest priority for all Instagram URLs)
+    if platform == "instagram" and COBALT_LOCAL_URL:
+        res = download_instagram_cobalt_local(url, download_dir)
+        if not res.error:
+            _cleanup_temp_cookie(cookies_path)
+            return res
+        logger.warning(f"Cobalt local failed: {res.error}")
+
     # Use multi-layered fallback for Instagram /p/ posts (which yt-dlp blocks)
     if platform == "instagram" and "/p/" in url:
         res = download_instagram_post_cobalt(url, download_dir)
@@ -894,7 +1152,15 @@ def download_video(url: str) -> MediaResult:
             return res
         logger.warning(f"instaloader failed: {res.error}")
 
-        logger.info("instaloader failed, trying gallery-dl fallback...")
+        if HIKERAPI_KEY:
+            logger.info("instaloader failed, trying HikerAPI fallback...")
+            res = download_instagram_hikerapi(url, download_dir)
+            if not res.error:
+                _cleanup_temp_cookie(cookies_path)
+                return res
+            logger.warning(f"HikerAPI failed: {res.error}")
+
+        logger.info("Trying gallery-dl fallback...")
         res = download_instagram_post_gallery_dl(url, download_dir, cookies_path)
         if not res.error:
             _cleanup_temp_cookie(cookies_path)
