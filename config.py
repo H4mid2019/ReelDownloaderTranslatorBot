@@ -20,6 +20,12 @@ RESPONSE_LANGUAGE = os.getenv("RESPONSE_LANGUAGE", "fa")
 # Truth Social configuration
 TRUTH_ALERT_CHAT_ID = os.getenv("TRUTH_ALERT_CHAT_ID")
 TRUTH_RSS_URL = os.getenv("TRUTH_RSS_URL", "https://trumpstruth.org/feed")
+# OpenRouter API key — used for Persian translation of Truth Social alerts
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+# Translation model via OpenRouter (default: Google Gemini 2.5 Flash)
+TRUTH_TRANSLATION_MODEL = os.getenv(
+    "TRUTH_TRANSLATION_MODEL", "google/gemini-2.5-flash"
+)
 
 # Instagram session cookies (recommended for downloading posts)
 # Get cookies from browser and save as Netscape format (.txt)

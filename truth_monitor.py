@@ -3,9 +3,10 @@ Truth Social monitor to fetch Donald Trump's posts and use Groq AI
 to determine if they relate to Iran, sending an alert if they do.
 """
 
-import os
 import asyncio
 import logging
+import os
+import re
 
 try:
     import feedparser  # type: ignore[import-not-found]
@@ -16,12 +17,105 @@ except ImportError:  # pragma: no cover - optional dependency may be absent in C
     _FEEDPARSER_AVAILABLE = False
 
 import groq
+from openai import AsyncOpenAI
+from telegram import InputMediaPhoto, InputMediaVideo
 
-from config import GROQ_API_KEY, TRUTH_ALERT_CHAT_ID, TRUTH_RSS_URL
+from config import (
+    GROQ_API_KEY,
+    OPENROUTER_API_KEY,
+    TRUTH_ALERT_CHAT_ID,
+    TRUTH_RSS_URL,
+    TRUTH_TRANSLATION_MODEL,
+)
 
 logger = logging.getLogger(__name__)
 
 LAST_POST_FILE = "last_truth_id.txt"
+
+
+def _extract_media_urls(entry) -> list[dict]:  # type: ignore[type-arg]
+    """Extract image/video URLs from an RSS entry.
+
+    Checks (in priority order):
+    1. media:content tags  (feedparser key: media_content)
+    2. media:thumbnail tags (feedparser key: media_thumbnail)
+    3. enclosure tags
+    4. <img>/<video> src attributes embedded in the HTML description
+
+    Returns a list of {"type": "image"|"video", "url": str} dicts.
+    Zero network calls — all data is already in memory from feedparser.
+    """
+    items: list[dict] = []  # type: ignore[type-arg]
+
+    for m in getattr(entry, "media_content", []):
+        url = m.get("url", "")
+        if url:
+            kind = "video" if m.get("medium") == "video" else "image"
+            items.append({"type": kind, "url": url})
+
+    for m in getattr(entry, "media_thumbnail", []):
+        url = m.get("url", "")
+        if url and not any(i["url"] == url for i in items):
+            items.append({"type": "image", "url": url})
+
+    for enc in getattr(entry, "enclosures", []):
+        url = enc.get("url", "")
+        mime = enc.get("type", "")
+        if url and not any(i["url"] == url for i in items):
+            kind = "video" if "video" in mime else "image"
+            items.append({"type": kind, "url": url})
+
+    if not items:
+        description = entry.get("description", "") or entry.get("summary", "")
+        for url in re.findall(
+            r'<img[^>]+src=["\']([^"\']+)["\']', description, re.IGNORECASE
+        ):
+            items.append({"type": "image", "url": url})
+        for url in re.findall(
+            r'<video[^>]+src=["\']([^"\']+)["\']', description, re.IGNORECASE
+        ):
+            items.append({"type": "video", "url": url})
+
+    return items
+
+
+async def _send_persian_translation(application, chat_id: str, text: str) -> None:
+    """Translate *text* to Persian via OpenRouter and send as a separate message.
+
+    Runs as a fire-and-forget asyncio task so it never delays the main alert.
+    Silently skips if OPENROUTER_API_KEY is not configured.
+    """
+    client = AsyncOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=OPENROUTER_API_KEY,
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model=TRUTH_TRANSLATION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Translate the following text to Persian (Farsi). "
+                        "Return only the translation, no explanations:\n\n"
+                        f"{text}"
+                    ),
+                }
+            ],
+            max_tokens=1000,
+            temperature=0.3,
+        )
+        persian = resp.choices[0].message.content
+        if persian:
+            persian = persian.strip()
+        if persian:
+            await application.bot.send_message(
+                chat_id=chat_id,
+                text=f"🇮🇷 **ترجمه فارسی:**\n\n{persian}",
+                parse_mode="Markdown",
+            )
+    except Exception as e:
+        logger.warning(f"Persian translation failed: {e}")
 
 
 class TruthMonitor:
@@ -112,9 +206,6 @@ Post:
                 if is_target:
                     logger.info("Post relates to Iran! Sending alert...")
 
-                    # Clean up basic HTML from RSS description
-                    import re
-
                     clean_content = (
                         re.sub(r"<[^>]+>", " ", content).replace("&nbsp;", " ").strip()
                     )
@@ -124,21 +215,97 @@ Post:
                     msg += f"_{clean_content}_\n\n"
                     msg += f"🔗 [View Post]({latest_post.link})"
 
+                    # Extract media URLs synchronously from in-memory RSS data
+                    media = _extract_media_urls(latest_post)
+
                     try:
-                        await application.bot.send_message(
-                            chat_id=self.chat_id,
-                            text=msg,
-                            parse_mode="Markdown",
-                            disable_web_page_preview=False,
-                        )
+                        await self._send_alert(application, msg, media)
                     except Exception as e:
                         logger.error(f"Failed to send Telegram alert: {e}")
+
+                    # Fire-and-forget Persian translation — never delays the main alert
+                    if OPENROUTER_API_KEY:
+                        asyncio.create_task(
+                            _send_persian_translation(
+                                application, self.chat_id, clean_content
+                            )
+                        )
 
                 # Save it so we don't process it again
                 self._save_last_processed_id(post_id)
 
         except Exception as e:
             logger.error(f"Error checking Truth Social feed: {e}")
+
+    async def _send_alert(self, application, msg: str, media: list) -> None:  # type: ignore[type-arg]
+        """Send the alert message, attaching media when present.
+
+        - No media      → send_message (identical to previous behaviour)
+        - Single image  → send_photo with msg as caption (if ≤1024 chars)
+        - Single video  → send_video with msg as caption (if ≤1024 chars)
+        - Multiple      → send_message for text, then send_media_group
+        - Caption overflow → send_message first, then media without caption
+        """
+        bot = application.bot
+        chat_id = self.chat_id
+
+        # Telegram caption limit is 1024 characters
+        caption = msg if len(msg) <= 1024 else None
+
+        if not media:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=msg,
+                parse_mode="Markdown",
+                disable_web_page_preview=False,
+            )
+            return
+
+        if len(media) == 1:
+            item = media[0]
+            if caption:
+                if item["type"] == "video":
+                    await bot.send_video(
+                        chat_id=chat_id,
+                        video=item["url"],
+                        caption=caption,
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=item["url"],
+                        caption=caption,
+                        parse_mode="Markdown",
+                    )
+            else:
+                # Text too long for a caption — send text first, then media bare
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=msg,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
+                )
+                if item["type"] == "video":
+                    await bot.send_video(chat_id=chat_id, video=item["url"])
+                else:
+                    await bot.send_photo(chat_id=chat_id, photo=item["url"])
+            return
+
+        # Multiple media items
+        await bot.send_message(
+            chat_id=chat_id,
+            text=msg,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+        media_group = [
+            InputMediaVideo(m["url"])
+            if m["type"] == "video"
+            else InputMediaPhoto(m["url"])
+            for m in media[:10]  # Telegram media group limit is 10
+        ]
+        await bot.send_media_group(chat_id=chat_id, media=media_group)
 
 
 async def monitor_loop(application):
