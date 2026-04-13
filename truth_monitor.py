@@ -122,6 +122,31 @@ async def _scrape_truth_media(status_url: str) -> list[dict]:  # type: ignore[ty
     return items
 
 
+def _chunk_text(body: str, limit: int) -> list[str]:
+    """Split *body* into pieces ≤*limit* chars, preferring paragraph/sentence breaks."""
+    if len(body) <= limit:
+        return [body]
+
+    chunks: list[str] = []
+    remaining = body
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        split = window.rfind("\n\n")
+        if split < limit // 2:
+            split = window.rfind(". ")
+            if split != -1:
+                split += 1  # keep the period with the preceding chunk
+        if split < limit // 2:
+            split = window.rfind(" ")
+        if split <= 0:
+            split = limit
+        chunks.append(remaining[:split].rstrip())
+        remaining = remaining[split:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
 async def _send_persian_translation(application, chat_id: str, text: str) -> None:
     """Translate *text* to Persian via Google AI Studio and send as a separate message.
 
@@ -146,18 +171,26 @@ async def _send_persian_translation(application, chat_id: str, text: str) -> Non
                     ),
                 }
             ],
-            max_tokens=1000,
+            max_tokens=4000,
             temperature=0.3,
         )
         persian = resp.choices[0].message.content
         if persian:
             persian = persian.strip()
-        if persian:
-            await application.bot.send_message(
-                chat_id=chat_id,
-                text=f"🇮🇷 **ترجمه فارسی:**\n\n{persian}",
-                parse_mode="Markdown",
-            )
+        if not persian:
+            return
+
+        # Telegram sendMessage caps at 4096 chars. Leave margin for header
+        # and the "(n/N)" suffix so multi-part translations never overflow.
+        header = "🇮🇷 ترجمه فارسی:"
+        chunks = _chunk_text(persian, 3900)
+        total = len(chunks)
+        for i, chunk in enumerate(chunks, start=1):
+            if total == 1:
+                body = f"{header}\n\n{chunk}"
+            else:
+                body = f"{header} ({i}/{total})\n\n{chunk}"
+            await application.bot.send_message(chat_id=chat_id, text=body)
     except Exception as e:
         logger.warning(f"Persian translation failed: {e}")
 

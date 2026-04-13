@@ -22,7 +22,7 @@ TRUTH_ALERT_CHAT_ID = os.getenv("TRUTH_ALERT_CHAT_ID")
 TRUTH_RSS_URL = os.getenv("TRUTH_RSS_URL", "https://trumpstruth.org/feed")
 # Translation model for Truth Social alerts — uses GEMINI_API_KEY via
 # Google AI Studio's OpenAI-compatible endpoint (same as translator.py).
-TRUTH_TRANSLATION_MODEL = os.getenv("TRUTH_TRANSLATION_MODEL", "gemini-2.5-flash")
+TRUTH_TRANSLATION_MODEL = os.getenv("TRUTH_TRANSLATION_MODEL", "gemini-2.5-flash-lite")
 
 # Instagram session cookies (recommended for downloading posts)
 # Get cookies from browser and save as Netscape format (.txt)
