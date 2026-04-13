@@ -17,12 +17,13 @@ except ImportError:  # pragma: no cover - optional dependency may be absent in C
     _FEEDPARSER_AVAILABLE = False
 
 import groq
+import httpx
 from openai import AsyncOpenAI
 from telegram import InputMediaPhoto, InputMediaVideo
 
 from config import (
+    GEMINI_API_KEY,
     GROQ_API_KEY,
-    OPENROUTER_API_KEY,
     TRUTH_ALERT_CHAT_ID,
     TRUTH_RSS_URL,
     TRUTH_TRANSLATION_MODEL,
@@ -79,15 +80,58 @@ def _extract_media_urls(entry) -> list[dict]:  # type: ignore[type-arg]
     return items
 
 
+async def _scrape_truth_media(status_url: str) -> list[dict]:  # type: ignore[type-arg]
+    """Fetch a trumpstruth.org status page and extract attached media.
+
+    The trumpstruth.org RSS feed never exposes media (no media:content,
+    no enclosures, no <img> in description). Media only lives in the HTML
+    of each status page, inside a ``div.status__attachments`` block with
+    ``status-attachment--image`` / ``status-attachment--video`` children.
+    """
+    items: list[dict] = []  # type: ignore[type-arg]
+    try:
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            headers={"User-Agent": "Mozilla/5.0 (TruthMonitor)"},
+            follow_redirects=True,
+        ) as client:
+            resp = await client.get(status_url)
+            resp.raise_for_status()
+            html = resp.text
+    except Exception as e:
+        logger.warning(f"Failed to scrape media from {status_url}: {e}")
+        return items
+
+    m = re.search(
+        r'<div class="status__attachments[^"]*">(.*?)</div>\s*</div>',
+        html,
+        re.DOTALL,
+    )
+    block = m.group(1) if m else html
+
+    for atype, tag, pattern in (
+        ("video", "video", r'<video[^>]+src=["\']([^"\']+)["\']'),
+        ("image", "img", r'<img[^>]+src=["\']([^"\']+)["\']'),
+    ):
+        for url in re.findall(pattern, block, re.IGNORECASE):
+            if "logo" in url or "avatar" in url:
+                continue
+            if not any(i["url"] == url for i in items):
+                items.append({"type": atype, "url": url})
+
+    return items
+
+
 async def _send_persian_translation(application, chat_id: str, text: str) -> None:
-    """Translate *text* to Persian via OpenRouter and send as a separate message.
+    """Translate *text* to Persian via Google AI Studio and send as a separate message.
 
     Runs as a fire-and-forget asyncio task so it never delays the main alert.
-    Silently skips if OPENROUTER_API_KEY is not configured.
+    Silently skips if GEMINI_API_KEY is not configured. Uses the same
+    OpenAI-compatible endpoint as translator.py.
     """
     client = AsyncOpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_API_KEY,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        api_key=GEMINI_API_KEY or "unset",
     )
     try:
         resp = await client.chat.completions.create(
@@ -215,8 +259,10 @@ Post:
                     msg += f"_{clean_content}_\n\n"
                     msg += f"🔗 [View Post]({latest_post.link})"
 
-                    # Extract media URLs synchronously from in-memory RSS data
+                    # Extract media URLs — RSS first, HTML scrape as fallback
                     media = _extract_media_urls(latest_post)
+                    if not media and latest_post.link:
+                        media = await _scrape_truth_media(latest_post.link)
 
                     try:
                         await self._send_alert(application, msg, media)
@@ -224,7 +270,7 @@ Post:
                         logger.error(f"Failed to send Telegram alert: {e}")
 
                     # Fire-and-forget Persian translation — never delays the main alert
-                    if OPENROUTER_API_KEY:
+                    if GEMINI_API_KEY:
                         asyncio.create_task(
                             _send_persian_translation(
                                 application, self.chat_id, clean_content
