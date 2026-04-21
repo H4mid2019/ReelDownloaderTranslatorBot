@@ -89,6 +89,11 @@ INSTALOADER_SESSION_FILE = os.getenv("INSTALOADER_SESSION_FILE", "")
 # https://hikerapi.com — used after instaloader, before gallery-dl.
 HIKERAPI_KEY = os.getenv("HIKERAPI_KEY", "")
 
+# ── WireGuard proxy (routes yt-dlp/gallery-dl/instaloader through home IP) ───
+# HTTP proxy container on wg_net — traffic exits via home residential IP.
+# Empty string disables proxy usage.
+RESIDENTIAL_PROXY = os.getenv("RESIDENTIAL_PROXY", "http://127.0.0.1:3128")
+
 # Model configuration (can be changed via .env)
 TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "whisper-large-v3")
 TRANSLATION_MODEL = os.getenv("TRANSLATION_MODEL", "llama-3.3-70b-versatile")

@@ -32,6 +32,7 @@ from config import (
     INSTALOADER_SESSION_USER,
     INSTALOADER_SESSION_FILE,
     HIKERAPI_KEY,
+    RESIDENTIAL_PROXY,
 )
 
 # ── Cookie file + session ID rotation state ──────────────────────────────────
@@ -222,7 +223,7 @@ def _resolve_cookies_file() -> Optional[str]:
 
 def _base_ydl_opts(download_dir: str) -> dict:
     """Return base yt-dlp options shared across all methods."""
-    return {
+    opts = {
         "outtmpl": os.path.join(download_dir, "%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
@@ -235,6 +236,9 @@ def _base_ydl_opts(download_dir: str) -> dict:
         "js_runtimes": {"deno": {"path": "/home/ubuntu/.deno/bin/deno"}},
         "remote_components": ["ejs:github"],
     }
+    if RESIDENTIAL_PROXY:
+        opts["proxy"] = RESIDENTIAL_PROXY
+    return opts
 
 
 def get_yt_dlp_options(download_dir: str, cookies_path: Optional[str] = None) -> dict:
@@ -497,6 +501,8 @@ def download_instagram_post_gallery_dl(
     # --write-metadata: creates .json files with caption/metadata
     # Note: --no-config is NOT supported on older gallery-dl versions; omit it.
     cmd = [gallery_dl_bin, "--dest", download_dir, "--write-metadata"]
+    if RESIDENTIAL_PROXY:
+        cmd.extend(["--proxy", RESIDENTIAL_PROXY])
     if INSTAGRAM_COOKIES_FROM_BROWSER:
         cmd.extend(["--cookies-from-browser", INSTAGRAM_COOKIES_FROM_BROWSER])
     elif cookies_path:
@@ -623,6 +629,11 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
                 compress_json=False,
                 quiet=True,
             )
+            if RESIDENTIAL_PROXY:
+                L.context._session.proxies = {
+                    "http": RESIDENTIAL_PROXY,
+                    "https": RESIDENTIAL_PROXY,
+                }
             import requests  # instaloader uses requests under the hood
 
             # ── Auth priority: session file > cookie pool > session ID ────────
@@ -1083,26 +1094,23 @@ def download_video(url: str) -> MediaResult:
     cookies_path = _resolve_cookies_file() if platform == "instagram" else None
     logger = logging.getLogger(__name__)
 
-    # Method 0: Cobalt self-hosted (cookie-free, highest priority for all Instagram URLs)
-    if platform == "instagram" and COBALT_LOCAL_URL:
-        res = download_instagram_cobalt_local(url, download_dir)
-        if not res.error:
-            _cleanup_temp_cookie(cookies_path)
-            return res
-        logger.warning(f"Cobalt local failed: {res.error}")
-
-    # Use multi-layered fallback for Instagram /p/ posts (which yt-dlp blocks)
+    # Photo posts (/p/) go straight to Cobalt → gallery-dl since yt-dlp can't handle them
     if platform == "instagram" and "/p/" in url:
+        if COBALT_LOCAL_URL:
+            res = download_instagram_cobalt_local(url, download_dir)
+            if not res.error:
+                _cleanup_temp_cookie(cookies_path)
+                return res
         res = download_instagram_post_cobalt(url, download_dir)
         if not res.error:
             _cleanup_temp_cookie(cookies_path)
             return res
-        # Fallback to gallery-dl if Cobalt fails for /p/
         res = download_instagram_post_gallery_dl(url, download_dir, cookies_path)
         _cleanup_temp_cookie(cookies_path)
         return res
 
-    # Standard download chain (yt-dlp -> Fallbacks)
+    # Standard download chain — yt-dlp FIRST (captures caption/description),
+    # then Cobalt local, then other fallbacks.
     last_error = "Unknown error"
 
     # Method 1: yt-dlp Desktop
@@ -1137,9 +1145,17 @@ def download_video(url: str) -> MediaResult:
         last_error = str(e)
         logger.warning(f"yt-dlp mobile failed: {last_error}")
 
-    # Method 3: Instagram-specific fallbacks (Cobalt -> instaloader -> gallery-dl)
+    # Method 3: Instagram-specific fallbacks (Cobalt local -> Cobalt public -> instaloader -> gallery-dl)
     if platform == "instagram":
-        logger.info("yt-dlp failed for Instagram, trying Cobalt fallback...")
+        if COBALT_LOCAL_URL:
+            logger.info("yt-dlp failed for Instagram, trying Cobalt local fallback...")
+            res = download_instagram_cobalt_local(url, download_dir)
+            if not res.error:
+                _cleanup_temp_cookie(cookies_path)
+                return res
+            logger.warning(f"Cobalt local failed: {res.error}")
+
+        logger.info("Trying Cobalt public fallback...")
         res = download_instagram_post_cobalt(url, download_dir)
         if not res.error:
             _cleanup_temp_cookie(cookies_path)
