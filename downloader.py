@@ -1094,18 +1094,28 @@ def download_video(url: str) -> MediaResult:
     cookies_path = _resolve_cookies_file() if platform == "instagram" else None
     logger = logging.getLogger(__name__)
 
-    # Photo posts (/p/) go straight to Cobalt → gallery-dl since yt-dlp can't handle them
+    # Photo posts (/p/) — gallery-dl first (caption support), rotating through all
+    # configured cookie files. Fall back to Cobalt on total failure.
     if platform == "instagram" and "/p/" in url:
+        gdl_tried = set()
+        for cf in _cookie_files or [cookies_path]:
+            if not cf or cf in gdl_tried:
+                continue
+            gdl_tried.add(cf)
+            gdl_dir = tempfile.mkdtemp(prefix="instagram_gdl_")
+            res = download_instagram_post_gallery_dl(url, gdl_dir, cf)
+            if not res.error:
+                _cleanup_temp_cookie(cookies_path)
+                return res
+            logger.warning(f"gallery-dl with {os.path.basename(cf)} failed: {res.error}")
+            shutil.rmtree(gdl_dir, ignore_errors=True)
+
         if COBALT_LOCAL_URL:
             res = download_instagram_cobalt_local(url, download_dir)
             if not res.error:
                 _cleanup_temp_cookie(cookies_path)
                 return res
         res = download_instagram_post_cobalt(url, download_dir)
-        if not res.error:
-            _cleanup_temp_cookie(cookies_path)
-            return res
-        res = download_instagram_post_gallery_dl(url, download_dir, cookies_path)
         _cleanup_temp_cookie(cookies_path)
         return res
 
