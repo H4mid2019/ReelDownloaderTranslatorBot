@@ -34,6 +34,10 @@ from config import (
     HIKERAPI_KEY,
     RESIDENTIAL_PROXY,
 )
+from stats import (
+    log as _stat_log,
+    track as _stat_track,
+)
 
 # ── Cookie file + session ID rotation state ──────────────────────────────────
 # Both lists are mutable at runtime so Telegram commands can update without restart.
@@ -382,8 +386,6 @@ def _cleanup_temp_cookie(path: Optional[str]) -> None:
 
 
 def download_instagram_post_cobalt(url: str, download_dir: str) -> MediaResult:
-    import time
-
     # Cobalt v7 mirrors are all shut down (Nov 2024).
     # v10+ requires JWT auth. Keep the function signature for the call chain
     # but return immediately — no working public mirrors available.
@@ -638,9 +640,10 @@ def download_instagram_post_instaloader(url: str, download_dir: str) -> MediaRes
 
             # ── Auth priority: session file > cookie pool > session ID ────────
             # Phase 2: native instaloader session file (weeks-long lifetime)
+            # Instaloader saves session files with lowercased usernames.
             _session_file = INSTALOADER_SESSION_FILE or (
                 os.path.expanduser(
-                    f"~/.config/instaloader/session-{INSTALOADER_SESSION_USER}"
+                    f"~/.config/instaloader/session-{INSTALOADER_SESSION_USER.lower()}"
                 )
                 if INSTALOADER_SESSION_USER
                 else ""
@@ -1095,15 +1098,20 @@ def download_video(url: str) -> MediaResult:
     logger = logging.getLogger(__name__)
 
     # Photo posts (/p/) — gallery-dl first (caption support), rotating through all
-    # configured cookie files. Fall back to Cobalt on total failure.
+    # configured cookie files. Fall back to Cobalt → instaloader → public mirrors → HikerAPI.
     if platform == "instagram" and "/p/" in url:
-        gdl_tried = set()
-        for cf in _cookie_files or [cookies_path]:
-            if not cf or cf in gdl_tried:
+        gdl_tried: set[str] = set()
+        candidates: list[str] = list(_cookie_files) if _cookie_files else (
+            [cookies_path] if cookies_path else []
+        )
+        for cf in candidates:
+            if cf in gdl_tried:
                 continue
             gdl_tried.add(cf)
             gdl_dir = tempfile.mkdtemp(prefix="instagram_gdl_")
-            res = download_instagram_post_gallery_dl(url, gdl_dir, cf)
+            res = _stat_track(platform, url,
+                              f"gallery-dl({os.path.basename(cf)})",
+                              download_instagram_post_gallery_dl, url, gdl_dir, cf)
             if not res.error:
                 _cleanup_temp_cookie(cookies_path)
                 return res
@@ -1111,11 +1119,35 @@ def download_video(url: str) -> MediaResult:
             shutil.rmtree(gdl_dir, ignore_errors=True)
 
         if COBALT_LOCAL_URL:
-            res = download_instagram_cobalt_local(url, download_dir)
+            res = _stat_track(platform, url, "cobalt-local",
+                              download_instagram_cobalt_local, url, download_dir)
             if not res.error:
                 _cleanup_temp_cookie(cookies_path)
                 return res
-        res = download_instagram_post_cobalt(url, download_dir)
+            logger.warning(f"Cobalt local failed: {res.error}")
+
+        res = _stat_track(platform, url, "instaloader",
+                          download_instagram_post_instaloader, url, download_dir)
+        if not res.error:
+            _cleanup_temp_cookie(cookies_path)
+            return res
+        logger.warning(f"instaloader failed: {res.error}")
+
+        res = _stat_track(platform, url, "cobalt-public",
+                          download_instagram_post_cobalt, url, download_dir)
+        if not res.error:
+            _cleanup_temp_cookie(cookies_path)
+            return res
+
+        if HIKERAPI_KEY:
+            logger.info("All free /p/ methods failed, trying HikerAPI (BILLED)...")
+            res = _stat_track(platform, url, "hikerapi",
+                              download_instagram_hikerapi, url, download_dir)
+            if not res.error:
+                _cleanup_temp_cookie(cookies_path)
+                return res
+            logger.warning(f"HikerAPI failed: {res.error}")
+
         _cleanup_temp_cookie(cookies_path)
         return res
 
@@ -1125,54 +1157,71 @@ def download_video(url: str) -> MediaResult:
 
     # Method 1: yt-dlp Desktop
     ydl_opts = get_yt_dlp_options(download_dir, cookies_path)
+    _t0 = time.monotonic()
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
             info = ydl.extract_info(target_url, download=True)
             if info:
                 description = str(info.get("description") or "")
                 tweet_text = description[:4000] if platform == "twitter" else None
+                _stat_log(platform, url, "yt-dlp-desktop", True,
+                          int((time.monotonic() - _t0) * 1000))
                 _cleanup_temp_cookie(cookies_path)
                 return process_info_result(
                     info, url, download_dir, platform, tweet_text
                 )
+            _stat_log(platform, url, "yt-dlp-desktop", False,
+                      int((time.monotonic() - _t0) * 1000), "no info")
     except Exception as e:
         last_error = str(e)
+        _stat_log(platform, url, "yt-dlp-desktop", False,
+                  int((time.monotonic() - _t0) * 1000), last_error)
         logger.warning(f"yt-dlp desktop failed: {last_error}")
 
     # Method 2: yt-dlp Mobile
     ydl_opts = get_mobile_headers_options(download_dir, cookies_path)
+    _t0 = time.monotonic()
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
             info = ydl.extract_info(target_url, download=True)
             if info:
                 description = str(info.get("description") or "")
                 tweet_text = description[:4000] if platform == "twitter" else None
+                _stat_log(platform, url, "yt-dlp-mobile", True,
+                          int((time.monotonic() - _t0) * 1000))
                 _cleanup_temp_cookie(cookies_path)
                 return process_info_result(
                     info, url, download_dir, platform, tweet_text
                 )
+            _stat_log(platform, url, "yt-dlp-mobile", False,
+                      int((time.monotonic() - _t0) * 1000), "no info")
     except Exception as e:
         last_error = str(e)
+        _stat_log(platform, url, "yt-dlp-mobile", False,
+                  int((time.monotonic() - _t0) * 1000), last_error)
         logger.warning(f"yt-dlp mobile failed: {last_error}")
 
     # Method 3: Instagram-specific fallbacks (Cobalt local -> Cobalt public -> instaloader -> gallery-dl)
     if platform == "instagram":
         if COBALT_LOCAL_URL:
             logger.info("yt-dlp failed for Instagram, trying Cobalt local fallback...")
-            res = download_instagram_cobalt_local(url, download_dir)
+            res = _stat_track(platform, url, "cobalt-local",
+                              download_instagram_cobalt_local, url, download_dir)
             if not res.error:
                 _cleanup_temp_cookie(cookies_path)
                 return res
             logger.warning(f"Cobalt local failed: {res.error}")
 
         logger.info("Trying Cobalt public fallback...")
-        res = download_instagram_post_cobalt(url, download_dir)
+        res = _stat_track(platform, url, "cobalt-public",
+                          download_instagram_post_cobalt, url, download_dir)
         if not res.error:
             _cleanup_temp_cookie(cookies_path)
             return res
 
         logger.info("Cobalt failed, trying instaloader fallback...")
-        res = download_instagram_post_instaloader(url, download_dir)
+        res = _stat_track(platform, url, "instaloader",
+                          download_instagram_post_instaloader, url, download_dir)
         if not res.error:
             _cleanup_temp_cookie(cookies_path)
             return res
@@ -1180,14 +1229,16 @@ def download_video(url: str) -> MediaResult:
 
         if HIKERAPI_KEY:
             logger.info("instaloader failed, trying HikerAPI fallback...")
-            res = download_instagram_hikerapi(url, download_dir)
+            res = _stat_track(platform, url, "hikerapi",
+                              download_instagram_hikerapi, url, download_dir)
             if not res.error:
                 _cleanup_temp_cookie(cookies_path)
                 return res
             logger.warning(f"HikerAPI failed: {res.error}")
 
         logger.info("Trying gallery-dl fallback...")
-        res = download_instagram_post_gallery_dl(url, download_dir, cookies_path)
+        res = _stat_track(platform, url, "gallery-dl",
+                          download_instagram_post_gallery_dl, url, download_dir, cookies_path)
         if not res.error:
             _cleanup_temp_cookie(cookies_path)
             return res
@@ -1232,8 +1283,6 @@ def download_video(url: str) -> MediaResult:
                     file_paths = []
                     file_size_bytes = 0
                     has_video = False
-
-                    import time
 
                     for idx, media in enumerate(media_extended):
                         media_url = media.get("url")

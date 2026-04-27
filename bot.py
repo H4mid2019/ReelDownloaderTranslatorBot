@@ -447,6 +447,33 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin-only: /report <range>
+    Range examples: 1d, 12h, 30s, 7d, 1m (1 month), 3M (3 months).
+    """
+    if not update.message:
+        return
+    chat_id = str(update.effective_chat.id) if update.effective_chat else ""
+    if ADMIN_CHAT_ID and chat_id != str(ADMIN_CHAT_ID):
+        await update.message.reply_text("This command is admin-only.")
+        return
+
+    import stats as _stats
+
+    args = context.args or []
+    spec = args[0] if args else "1d"
+    seconds = _stats.parse_range(spec)
+    if seconds is None:
+        await update.message.reply_text(
+            "Bad range. Examples: 30s, 12h, 1d, 7d, 1m (month), 3M (months)."
+        )
+        return
+
+    text = _stats.format_report(seconds, spec)
+    await update.message.reply_text(f"```\n{text}\n```", parse_mode="Markdown")
+
+
 def split_video(
     video_path: str, chunk_size_bytes: int = VIDEO_CHUNK_SIZE_BYTES
 ) -> list:
@@ -1629,6 +1656,7 @@ def main():
     application.add_handler(CommandHandler("chatid", chatid_command))
     application.add_handler(CommandHandler("setcookie", setcookie_command))
     application.add_handler(CommandHandler("clearcache", clearcache_command))
+    application.add_handler(CommandHandler("report", report_command))
     application.add_handler(CommandHandler("d", download_command))
     application.add_handler(CommandHandler("dl", download_local_command))
     application.add_handler(CommandHandler("db", download_detailed_command))
