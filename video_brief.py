@@ -59,7 +59,7 @@ _LANGUAGE_NAMES = {
     "zh": "Chinese",
 }
 
-_BRIEF_RESPONSE_SCHEMA = {
+_BRIEF_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "OBJECT",
     "properties": {
         "source_language_code": {"type": "STRING"},
@@ -85,12 +85,54 @@ _BRIEF_RESPONSE_SCHEMA = {
     ],
 }
 
+# Same schema plus sentiment object for /dbs
+_SENTIMENT_PROPS: dict[str, Any] = {
+    "visual_sentiment": {
+        "type": "OBJECT",
+        "properties": {
+            "faces_visible": {"type": "BOOLEAN"},
+            "notes": {"type": "STRING"},
+        },
+        "required": ["faces_visible", "notes"],
+    },
+    "vocal_sentiment": {
+        "type": "OBJECT",
+        "properties": {
+            "tone": {"type": "STRING"},
+            "notes": {"type": "STRING"},
+        },
+        "required": ["tone", "notes"],
+    },
+    "text_sentiment": {
+        "type": "OBJECT",
+        "properties": {
+            "overall": {"type": "STRING"},
+            "emotions": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "notes": {"type": "STRING"},
+        },
+        "required": ["overall", "emotions", "notes"],
+    },
+}
+
+_BRIEF_SENTIMENT_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        **_BRIEF_RESPONSE_SCHEMA["properties"],
+        **_SENTIMENT_PROPS,
+    },
+    "required": list(_BRIEF_RESPONSE_SCHEMA["required"]) + [
+        "visual_sentiment", "vocal_sentiment", "text_sentiment"
+    ],
+}
+
 
 def make_video_brief_cache_key(
-    platform: str, post_id: str, model: str = GOOGLE_AI_MODEL
+    platform: str, post_id: str, model: str = GOOGLE_AI_MODEL,
+    with_sentiment: bool = False,
 ) -> str:
-    """Create a stable cache key for `/df` results."""
-    return f"brief:{platform}:{post_id}:{model}"
+    """Create a stable cache key for `/db` (and `/dbs` when with_sentiment)."""
+    suffix = ":sent" if with_sentiment else ""
+    return f"brief:{platform}:{post_id}:{model}{suffix}"
 
 
 def build_video_brief_prompt(
@@ -125,6 +167,60 @@ def build_video_brief_prompt(
         '  "summary": "Brief summary in the original language",\n'
         '  "key_highlights": ["...", "..."],\n'
         '  "takeaways": ["...", "..."]\n'
+        "}" + caption_block
+    )
+
+
+def build_video_brief_with_sentiment_prompt(
+    platform: str,
+    caption_context: Optional[str] = None,
+) -> str:
+    """Brief + sentiment (visual / vocal / text). Source-language preserving."""
+    caption_block = ""
+    if caption_context and caption_context.strip():
+        caption_block = (
+            "\n\nAdditional post context (caption or tweet text):\n"
+            f"""{caption_context.strip()}"""
+        )
+
+    return (
+        "You are an expert multimodal video analyst. "
+        f"Analyze this {platform} video and return ONLY a JSON object.\n\n"
+        "Requirements:\n"
+        "- Transcript verbatim in the original spoken language.\n"
+        "- summary, key_highlights, takeaways: written in the SAME source "
+        "language as the transcript (do NOT translate).\n"
+        "- visual_sentiment, vocal_sentiment, text_sentiment fields below: "
+        "always written in English regardless of source language (so the "
+        "user can read them quickly).\n"
+        "- For visual_sentiment.faces_visible: true only if at least one human "
+        "face is clearly visible at some point.\n"
+        "- For visual_sentiment.notes: describe observable cues only "
+        "(e.g. 'speaker smiles when discussing X', 'tense posture during Y'). "
+        "If no faces are visible, set notes to 'No faces visible' and "
+        "describe other visual cues if any.\n"
+        "- For vocal_sentiment.tone: short label (e.g. 'calm and measured', "
+        "'agitated and rapid', 'monotone'). notes: brief explanation.\n"
+        "- For text_sentiment.overall: one of "
+        "'positive', 'negative', 'neutral', 'mixed'.\n"
+        "- For text_sentiment.emotions: short list of detected tones in the "
+        "transcript (e.g. ['hopeful', 'sarcastic', 'resigned']).\n"
+        "- IMPORTANT: present sentiment as observed cues, not as definitive "
+        "psychological diagnosis. Do not over-interpret.\n"
+        "- Do NOT embed markdown (**, ##, -, *) inside any JSON string value.\n"
+        "- Return no markdown fences, no commentary outside JSON.\n\n"
+        "JSON shape:\n"
+        "{\n"
+        '  "source_language_code": "ISO 639-1",\n'
+        '  "source_language_name": "Human readable",\n'
+        '  "transcript": "Verbatim, original language",\n'
+        '  "summary": "Source-language summary",\n'
+        '  "key_highlights": ["...", "..."],\n'
+        '  "takeaways": ["...", "..."],\n'
+        '  "visual_sentiment": {"faces_visible": true, "notes": "English"},\n'
+        '  "vocal_sentiment": {"tone": "English", "notes": "English"},\n'
+        '  "text_sentiment": {"overall": "positive|negative|neutral|mixed", '
+        '"emotions": ["english", "..."], "notes": "English"}\n'
         "}" + caption_block
     )
 
@@ -245,6 +341,30 @@ def _normalize_string_list(values: Any) -> list[str]:
     return normalized
 
 
+def _normalize_sentiment(payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Extract sentiment fields if present; return None when absent."""
+    vis = payload.get("visual_sentiment")
+    voc = payload.get("vocal_sentiment")
+    txt = payload.get("text_sentiment")
+    if not (isinstance(vis, dict) or isinstance(voc, dict) or isinstance(txt, dict)):
+        return None
+    return {
+        "visual": {
+            "faces_visible": bool(vis.get("faces_visible")) if isinstance(vis, dict) else False,
+            "notes": str(vis.get("notes") or "").strip() if isinstance(vis, dict) else "",
+        },
+        "vocal": {
+            "tone": str(voc.get("tone") or "").strip() if isinstance(voc, dict) else "",
+            "notes": str(voc.get("notes") or "").strip() if isinstance(voc, dict) else "",
+        },
+        "text": {
+            "overall": str(txt.get("overall") or "").strip().lower() if isinstance(txt, dict) else "",
+            "emotions": _normalize_string_list(txt.get("emotions")) if isinstance(txt, dict) else [],
+            "notes": str(txt.get("notes") or "").strip() if isinstance(txt, dict) else "",
+        },
+    }
+
+
 def _normalize_response(payload: dict[str, Any]) -> dict[str, Any]:
     source_language_code = (
         str(payload.get("source_language_code") or payload.get("language_code") or "")
@@ -263,7 +383,7 @@ def _normalize_response(payload: dict[str, Any]) -> dict[str, Any]:
     key_highlights = _normalize_string_list(payload.get("key_highlights"))
     takeaways = _normalize_string_list(payload.get("takeaways"))
 
-    return {
+    out: dict[str, Any] = {
         "source_language_code": source_language_code,
         "source_language_name": source_language_name,
         "transcript": transcript,
@@ -271,6 +391,10 @@ def _normalize_response(payload: dict[str, Any]) -> dict[str, Any]:
         "key_highlights": key_highlights,
         "takeaways": takeaways,
     }
+    sentiment = _normalize_sentiment(payload)
+    if sentiment is not None:
+        out["sentiment"] = sentiment
+    return out
 
 
 def generate_video_brief(
@@ -279,8 +403,13 @@ def generate_video_brief(
     platform: str = "instagram",
     model: Optional[str] = None,
     client: Any | None = None,
+    with_sentiment: bool = False,
 ) -> dict[str, Any]:
-    """Generate transcript, summary, highlights and takeaways for a video."""
+    """Generate transcript, summary, highlights and takeaways for a video.
+
+    When with_sentiment=True, also returns visual / vocal / text sentiment
+    observations (used by the /dbs command).
+    """
     if not os.path.exists(video_path):
         return {"error": f"File not found: {video_path}"}
 
@@ -294,6 +423,8 @@ def generate_video_brief(
 
     client = client or genai.Client(api_key=GEMINI_API_KEY)
     model_name = model or GOOGLE_AI_MODEL
+    schema = (_BRIEF_SENTIMENT_RESPONSE_SCHEMA if with_sentiment
+              else _BRIEF_RESPONSE_SCHEMA)
     uploaded_file = None
 
     try:
@@ -303,13 +434,15 @@ def generate_video_brief(
         )
         uploaded_file = _wait_for_file_processing(client, uploaded_file)
 
-        prompt = build_video_brief_prompt(platform, caption_context)
+        prompt = (build_video_brief_with_sentiment_prompt(platform, caption_context)
+                  if with_sentiment
+                  else build_video_brief_prompt(platform, caption_context))
         response = client.models.generate_content(
             model=model_name,
             contents=[uploaded_file, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_json_schema=_BRIEF_RESPONSE_SCHEMA,
+                response_json_schema=schema,
                 temperature=0.2,
                 max_output_tokens=65535,
             ),
@@ -505,6 +638,30 @@ def _format_bullets(title: str, items: Iterable[str]) -> str:
     return f"{title}\n{bullet_lines}"
 
 
+def _format_sentiment_section(sentiment: dict[str, Any]) -> str:
+    vis = sentiment.get("visual", {}) or {}
+    voc = sentiment.get("vocal", {}) or {}
+    txt = sentiment.get("text", {}) or {}
+
+    lines = ["🎭 Sentiment & Tone (observed cues — not definitive)"]
+
+    faces = "yes" if vis.get("faces_visible") else "no"
+    vis_notes = str(vis.get("notes") or "").strip() or "—"
+    lines.append(f"• Visual ({faces} faces visible): {vis_notes}")
+
+    voc_tone = str(voc.get("tone") or "").strip() or "—"
+    voc_notes = str(voc.get("notes") or "").strip()
+    lines.append(f"• Vocal: {voc_tone}" + (f" — {voc_notes}" if voc_notes else ""))
+
+    overall = str(txt.get("overall") or "").strip() or "—"
+    emotions = _normalize_string_list(txt.get("emotions"))
+    txt_notes = str(txt.get("notes") or "").strip()
+    emo_part = f" [{', '.join(emotions)}]" if emotions else ""
+    lines.append(f"• Text: {overall}{emo_part}" + (f" — {txt_notes}" if txt_notes else ""))
+
+    return "\n".join(lines)
+
+
 def build_video_brief_messages(
     brief: dict[str, Any],
     post_url: str,
@@ -521,6 +678,7 @@ def build_video_brief_messages(
     summary = str(brief.get("summary") or "").strip()
     key_highlights = _normalize_string_list(brief.get("key_highlights"))
     takeaways = _normalize_string_list(brief.get("takeaways"))
+    sentiment = brief.get("sentiment") if isinstance(brief.get("sentiment"), dict) else None
     model_name = str(brief.get("model") or GOOGLE_AI_MODEL)
 
     header = (
@@ -546,6 +704,9 @@ def build_video_brief_messages(
         _format_bullets("🎯 Takeaways", takeaways),
         "━━━━━━━━━━━━━━━━━━━━",
     ]
+    if sentiment:
+        sections.append(_format_sentiment_section(sentiment))
+        sections.append("━━━━━━━━━━━━━━━━━━━━")
 
     report = "\n\n".join(section for section in sections if section)
     return _split_telegram_message(report, max_chars=max_chars)

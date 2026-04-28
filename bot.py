@@ -766,6 +766,25 @@ async def download_detailed_command(update: Update, context: ContextTypes.DEFAUL
     await process_detailed_url(update, context, url)
 
 
+async def download_detailed_sentiment_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Handle /dbs — same as /db but adds visual / vocal / text sentiment analysis."""
+    if not update.message:
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "❌ Please provide a URL.\n"
+            "Usage: /dbs <url>\n\n"
+            "Like /db but also reports observed facial, vocal and text sentiment cues.\n\n"
+            + DISCLAIMER
+        )
+        return
+
+    url = " ".join(context.args)
+    await process_detailed_url(update, context, url, with_sentiment=True)
+
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle regular text messages to auto-detect supported URLs."""
     if not update.message:
@@ -786,6 +805,7 @@ async def process_detailed_url(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     url: str,
+    with_sentiment: bool = False,
 ):
     """Process an Instagram/X video and return a detailed source-language brief."""
     if not update.message or not update.message.from_user:
@@ -852,7 +872,10 @@ async def process_detailed_url(
         cache_key = None
         cached_brief = None
         if _cache and post_id_tuple:
-            cache_key = make_video_brief_cache_key(post_id_tuple[0], post_id_tuple[1])
+            cache_key = make_video_brief_cache_key(
+                post_id_tuple[0], post_id_tuple[1],
+                with_sentiment=with_sentiment,
+            )
             cached_brief = _cache.get(cache_key)
 
         if cached_brief:
@@ -876,6 +899,7 @@ async def process_detailed_url(
                 result.file_path,
                 caption_context=result.caption or result.tweet_text,
                 platform=result.platform,
+                with_sentiment=with_sentiment,
             ),
         )
 
@@ -1660,6 +1684,7 @@ def main():
     application.add_handler(CommandHandler("d", download_command))
     application.add_handler(CommandHandler("dl", download_local_command))
     application.add_handler(CommandHandler("db", download_detailed_command))
+    application.add_handler(CommandHandler("dbs", download_detailed_sentiment_command))
 
     application.add_handler(
         MessageHandler(
