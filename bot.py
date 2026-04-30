@@ -289,11 +289,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• **Captions:** Instagram post captions are attached to the media with their translation.\n"
         "• **Truth Monitor:** Background tracking of Trump's Truth Social for Iran-related posts.\n\n"
         "📝 **Commands:**\n"
-        "/chatid - Get the current chat ID\n"
         "/help - Show detailed help\n"
+        "/chatid - Get the current chat ID\n"
         "/d <url> - Manual download (if auto-detect fails)\n"
         "/dl <url> - Manual download using Local AI Fallback\n"
-        "/db <url> - Detailed source-language transcript + summary brief\n\n"
+        "/db <url> - Detailed source-language transcript + summary brief\n"
+        "/dbs <url> - Detailed brief PLUS visual / vocal / text sentiment\n\n"
         + DISCLAIMER
     )
 
@@ -304,19 +305,30 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "📖 **How to use:**\n\n"
-        "1️⃣ **Send a Link:** Simply paste an Instagram or X/Twitter link. I will detect it automatically.\n"
+        "1️⃣ **Send a Link:** Simply paste an Instagram, X/Twitter, or YouTube link. I will detect it automatically.\n"
         "2️⃣ **Wait for Download:** I'll download the media (Photo, Video, or Gallery).\n"
         "3️⃣ **Transcription & Translation:**\n"
         "   • **Persian:** No translation needed.\n"
         "   • **English:** Transcript provided.\n"
         "   • **Other Languages:** Transcript + English translation provided.\n\n"
         "✅ **Supported Platforms:**\n"
-        "• **Instagram:** Reels, TV, and Posts (/p/ posts are now supported!)\n"
+        "• **Instagram:** Reels, TV, and Posts (carousels supported)\n"
         "• **X/Twitter:** Status videos and text-only posts.\n"
+        "• **YouTube:** /db and /dbs work; standard auto-handling for any URL.\n"
         "• **Truth Social:** Automated monitoring for specific alerts.\n\n"
         "💡 **Pro Tip:** Videos over 50MB are automatically split into smaller parts for Telegram compatibility.\n\n"
-        "🧠 **Detailed Brief Command:**\n"
-        "• /db <url> - Generates a transcript, summary, key highlights, and takeaways in the source language.\n\n"
+        "📝 **Public Commands:**\n"
+        "• /start - Quick intro and feature overview\n"
+        "• /help - This message\n"
+        "• /chatid - Show the current chat ID (useful for setup)\n"
+        "• /d <url> - Manual download (Groq for transcription/translation)\n"
+        "• /dl <url> - Manual download (Google Gemini fallback path)\n"
+        "• /db <url> - Detailed brief: transcript + summary + highlights + takeaways, in the source language\n"
+        "• /dbs <url> - Same as /db plus visual / vocal / text sentiment cues\n\n"
+        "🛡️ **Admin Commands:**\n"
+        "• /setcookie <sessionid> - Update the active Instagram session ID at runtime\n"
+        "• /clearcache - Wipe the AI result cache\n"
+        "• /report <range> - Per-method download statistics (e.g. 1d, 12h, 1m=month, 3M=months)\n\n"
         + DISCLAIMER
     )
 
