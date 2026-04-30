@@ -818,12 +818,13 @@ async def process_detailed_url(
     )
 
     platform = detect_platform(url)
-    if platform not in {"instagram", "twitter"}:
+    if platform not in {"instagram", "twitter", "youtube"}:
         await update.message.reply_text(
-            "❌ Unsupported URL for /df.\n\n"
+            "❌ Unsupported URL.\n\n"
             "Supported:\n"
             "• Instagram video posts\n"
-            "• X/Twitter video posts\n\n" + DISCLAIMER
+            "• X/Twitter video posts\n"
+            "• YouTube videos\n\n" + DISCLAIMER
         )
         return
 

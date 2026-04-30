@@ -189,26 +189,28 @@ def build_video_brief_with_sentiment_prompt(
     return (
         "You are an expert multimodal video analyst. "
         f"Analyze this {platform} video and return ONLY a JSON object.\n\n"
-        "Requirements:\n"
-        "- Transcript verbatim in the original spoken language.\n"
-        "- summary, key_highlights, takeaways: written in the SAME source "
-        "language as the transcript (do NOT translate).\n"
-        "- visual_sentiment, vocal_sentiment, text_sentiment fields below: "
-        "always written in English regardless of source language (so the "
-        "user can read them quickly).\n"
-        "- For visual_sentiment.faces_visible: true only if at least one human "
-        "face is clearly visible at some point.\n"
-        "- For visual_sentiment.notes: describe observable cues only "
+        "LANGUAGE RULE — NON-NEGOTIABLE:\n"
+        "Detect the spoken language of the video. EVERY string-valued field "
+        "(transcript, summary, key_highlights, takeaways, visual_sentiment.notes, "
+        "vocal_sentiment.tone, vocal_sentiment.notes, text_sentiment.overall, "
+        "text_sentiment.emotions, text_sentiment.notes) MUST be written in that "
+        "spoken language. If the video is in Persian, write everything in Persian. "
+        "If in Arabic, everything in Arabic. NEVER translate to English unless "
+        "the video is spoken in English.\n\n"
+        "Other requirements:\n"
+        "- visual_sentiment.faces_visible (boolean): true only if at least one "
+        "human face is clearly visible at some point.\n"
+        "- visual_sentiment.notes: describe observable cues only "
         "(e.g. 'speaker smiles when discussing X', 'tense posture during Y'). "
-        "If no faces are visible, set notes to 'No faces visible' and "
-        "describe other visual cues if any.\n"
-        "- For vocal_sentiment.tone: short label (e.g. 'calm and measured', "
-        "'agitated and rapid', 'monotone'). notes: brief explanation.\n"
-        "- For text_sentiment.overall: one of "
-        "'positive', 'negative', 'neutral', 'mixed'.\n"
-        "- For text_sentiment.emotions: short list of detected tones in the "
-        "transcript (e.g. ['hopeful', 'sarcastic', 'resigned']).\n"
-        "- IMPORTANT: present sentiment as observed cues, not as definitive "
+        "If no faces are visible, say so and describe other visual cues.\n"
+        "- vocal_sentiment.tone: short label "
+        "(e.g. 'calm and measured', 'agitated and rapid', 'monotone'). "
+        "vocal_sentiment.notes: brief explanation.\n"
+        "- text_sentiment.overall: a short label for overall sentiment "
+        "(e.g. positive / negative / neutral / mixed in the source language).\n"
+        "- text_sentiment.emotions: short list of detected emotional tones "
+        "(e.g. hopeful, sarcastic, resigned) in the source language.\n"
+        "- IMPORTANT: present sentiment as observed cues, not a definitive "
         "psychological diagnosis. Do not over-interpret.\n"
         "- Do NOT embed markdown (**, ##, -, *) inside any JSON string value.\n"
         "- Return no markdown fences, no commentary outside JSON.\n\n"
@@ -216,14 +218,17 @@ def build_video_brief_with_sentiment_prompt(
         "{\n"
         '  "source_language_code": "ISO 639-1",\n'
         '  "source_language_name": "Human readable",\n'
-        '  "transcript": "Verbatim, original language",\n'
-        '  "summary": "Source-language summary",\n'
-        '  "key_highlights": ["...", "..."],\n'
-        '  "takeaways": ["...", "..."],\n'
-        '  "visual_sentiment": {"faces_visible": true, "notes": "English"},\n'
-        '  "vocal_sentiment": {"tone": "English", "notes": "English"},\n'
-        '  "text_sentiment": {"overall": "positive|negative|neutral|mixed", '
-        '"emotions": ["english", "..."], "notes": "English"}\n'
+        '  "transcript": "Verbatim in the spoken language",\n'
+        '  "summary": "Summary in the spoken language",\n'
+        '  "key_highlights": ["highlight in spoken language", "..."],\n'
+        '  "takeaways": ["takeaway in spoken language", "..."],\n'
+        '  "visual_sentiment": {"faces_visible": true, '
+        '"notes": "in spoken language"},\n'
+        '  "vocal_sentiment": {"tone": "in spoken language", '
+        '"notes": "in spoken language"},\n'
+        '  "text_sentiment": {"overall": "in spoken language", '
+        '"emotions": ["in spoken language", "..."], '
+        '"notes": "in spoken language"}\n'
         "}" + caption_block
     )
 
@@ -412,6 +417,7 @@ def _fetch_sentiment_only(
     uploaded_file: Any,
     transcript: str,
     model_name: str,
+    source_language_name: str = "",
 ) -> Optional[dict[str, Any]]:
     """Second-pass call asking ONLY for sentiment fields. Returns the
     normalized sentiment dict, or None if the call fails or yields nothing."""
@@ -420,18 +426,27 @@ def _fetch_sentiment_only(
         snippet = transcript.strip()[:1500]
         transcript_block = f"\n\nTranscript excerpt:\n{snippet}"
 
+    lang_clause = (
+        f"Write all string values in {source_language_name}, the spoken "
+        f"language of the video. Do NOT translate to English."
+        if source_language_name
+        else "Write all string values in the spoken language of the video. "
+             "Do NOT translate to English unless the video is in English."
+    )
+
     prompt = (
         "Re-analyze the same video for sentiment ONLY. "
-        "Return ONLY a JSON object with exactly these fields, in English:\n\n"
+        "Return ONLY a JSON object with exactly these fields:\n\n"
         '{\n'
         '  "visual_sentiment": {"faces_visible": true|false, "notes": "..."},\n'
         '  "vocal_sentiment": {"tone": "short label", "notes": "..."},\n'
-        '  "text_sentiment": {"overall": "positive|negative|neutral|mixed", '
+        '  "text_sentiment": {"overall": "short label", '
         '"emotions": ["...", "..."], "notes": "..."}\n'
         '}\n\n'
-        "All three fields are MANDATORY. If faces are not visible, set "
-        "faces_visible=false and put 'No faces visible' in notes. "
-        "Present sentiment as observed cues only, not as a definitive "
+        f"{lang_clause}\n"
+        "All three top-level fields are MANDATORY. If faces are not visible, "
+        "set faces_visible=false and say so in notes. "
+        "Present sentiment as observed cues only, not a definitive "
         "psychological diagnosis. No markdown, no commentary, JSON only."
         + transcript_block
     )
@@ -644,6 +659,7 @@ def generate_video_brief(
             sentiment = _fetch_sentiment_only(
                 client, uploaded_file, normalized.get("transcript", ""),
                 model_name,
+                source_language_name=normalized.get("source_language_name", ""),
             )
             if sentiment:
                 normalized["sentiment"] = sentiment
