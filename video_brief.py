@@ -19,7 +19,12 @@ import re
 import time
 from typing import Any, Iterable, Optional
 
-from config import GEMINI_API_KEY, GOOGLE_AI_MODEL, GOOGLE_AI_MODEL_SENTIMENT
+from config import (
+    GEMINI_API_KEY,
+    GOOGLE_AI_MODEL,
+    GOOGLE_AI_MODEL_SENTIMENT,
+    RESPONSE_LANGUAGE,
+)
 
 try:
     from google import genai
@@ -34,6 +39,58 @@ except (
     _GOOGLE_AI_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+_LABELS_BY_LANG: dict[str, dict[str, str]] = {
+    "en": {
+        "header": "🎬 Detailed Brief",
+        "platform": "• Platform: ",
+        "language": "• Language: ",
+        "model": "• Model: ",
+        "open_post": "🔗 Open original post: ",
+        "transcript": "📝 Transcript",
+        "summary": "📌 Summary",
+        "highlights": "✨ Key Highlights",
+        "takeaways": "🎯 Takeaways",
+        "sentiment_header": "🎭 Sentiment & Tone (observed cues — not definitive)",
+        "visual_with": "• Visual ({faces} faces visible):",
+        "vocal": "• Vocal: ",
+        "text": "• Text: ",
+        "yes": "yes",
+        "no": "no",
+        "no_transcript": "No transcript returned.",
+        "no_summary": "No summary returned.",
+        "no_items": "No items returned.",
+        "em_dash": "—",
+    },
+    "fa": {
+        "header": "🎬 خلاصه دقیق",
+        "platform": "• پلتفرم: ",
+        "language": "• زبان: ",
+        "model": "• مدل: ",
+        "open_post": "🔗 پست اصلی: ",
+        "transcript": "📝 رونوشت",
+        "summary": "📌 خلاصه",
+        "highlights": "✨ نکات کلیدی",
+        "takeaways": "🎯 درس‌ها",
+        "sentiment_header": "🎭 احساس و لحن (نشانه‌های مشاهده‌شده — قطعی نیست)",
+        "visual_with": "• بصری (چهره‌های قابل مشاهده: {faces}):",
+        "vocal": "• صوتی: ",
+        "text": "• متن: ",
+        "yes": "بله",
+        "no": "خیر",
+        "no_transcript": "رونوشتی دریافت نشد.",
+        "no_summary": "خلاصه‌ای دریافت نشد.",
+        "no_items": "موردی دریافت نشد.",
+        "em_dash": "—",
+    },
+}
+
+
+def _labels(lang: Optional[str] = None) -> dict[str, str]:
+    """Return label dict for the requested UI language, falling back to English."""
+    code = (lang or RESPONSE_LANGUAGE or "en").strip().lower()
+    return _LABELS_BY_LANG.get(code, _LABELS_BY_LANG["en"])
 
 
 _LANGUAGE_NAMES = {
@@ -735,34 +792,35 @@ def _split_telegram_message(text: str, max_chars: int = 3900) -> list[str]:
     return chunks or [text[:max_chars]]
 
 
-def _format_bullets(title: str, items: Iterable[str]) -> str:
+def _format_bullets(title: str, items: Iterable[str], empty_text: str = "No items returned.") -> str:
     item_list = [item for item in items if item.strip()]
     if not item_list:
-        return f"{title}\nNo items returned."
+        return f"{title}\n{empty_text}"
     bullet_lines = "\n".join(f"• {item}" for item in item_list)
     return f"{title}\n{bullet_lines}"
 
 
-def _format_sentiment_section(sentiment: dict[str, Any]) -> str:
+def _format_sentiment_section(sentiment: dict[str, Any], lang: Optional[str] = None) -> str:
+    L = _labels(lang)
     vis = sentiment.get("visual", {}) or {}
     voc = sentiment.get("vocal", {}) or {}
     txt = sentiment.get("text", {}) or {}
 
-    lines = ["🎭 Sentiment & Tone (observed cues — not definitive)"]
+    lines = [L["sentiment_header"]]
 
-    faces = "yes" if vis.get("faces_visible") else "no"
-    vis_notes = str(vis.get("notes") or "").strip() or "—"
-    lines.append(f"• Visual ({faces} faces visible): {vis_notes}")
+    faces = L["yes"] if vis.get("faces_visible") else L["no"]
+    vis_notes = str(vis.get("notes") or "").strip() or L["em_dash"]
+    lines.append(f"{L['visual_with'].format(faces=faces)} {vis_notes}")
 
-    voc_tone = str(voc.get("tone") or "").strip() or "—"
+    voc_tone = str(voc.get("tone") or "").strip() or L["em_dash"]
     voc_notes = str(voc.get("notes") or "").strip()
-    lines.append(f"• Vocal: {voc_tone}" + (f" — {voc_notes}" if voc_notes else ""))
+    lines.append(f"{L['vocal']}{voc_tone}" + (f" — {voc_notes}" if voc_notes else ""))
 
-    overall = str(txt.get("overall") or "").strip() or "—"
+    overall = str(txt.get("overall") or "").strip() or L["em_dash"]
     emotions = _normalize_string_list(txt.get("emotions"))
     txt_notes = str(txt.get("notes") or "").strip()
     emo_part = f" [{', '.join(emotions)}]" if emotions else ""
-    lines.append(f"• Text: {overall}{emo_part}" + (f" — {txt_notes}" if txt_notes else ""))
+    lines.append(f"{L['text']}{overall}{emo_part}" + (f" — {txt_notes}" if txt_notes else ""))
 
     return "\n".join(lines)
 
@@ -772,11 +830,18 @@ def build_video_brief_messages(
     post_url: str,
     platform: str,
     max_chars: int = 3900,
+    ui_lang: Optional[str] = None,
 ) -> list[str]:
-    """Format a brief into Telegram-safe messages."""
+    """Format a brief into Telegram-safe messages.
+
+    ui_lang controls the language of structural labels (Transcript, Summary, …).
+    Defaults to RESPONSE_LANGUAGE from .env (fa by default). Falls back to
+    English for languages without a translation.
+    """
     if brief.get("error"):
         return [str(brief["error"])]
 
+    L = _labels(ui_lang)
     source_language_name = str(brief.get("source_language_name") or "Unknown")
     source_language_code = str(brief.get("source_language_code") or "").strip().lower()
     transcript = str(brief.get("transcript") or "").strip()
@@ -787,30 +852,30 @@ def build_video_brief_messages(
     model_name = str(brief.get("model") or GOOGLE_AI_MODEL)
 
     header = (
-        f"🎬 Detailed Brief\n"
-        f"• Platform: {platform.title()}\n"
-        f"• Language: {source_language_name}"
+        f"{L['header']}\n"
+        f"{L['platform']}{platform.title()}\n"
+        f"{L['language']}{source_language_name}"
     )
     if source_language_code:
         header += f" ({source_language_code})"
-    header += f"\n• Model: {model_name}\n"
+    header += f"\n{L['model']}{model_name}\n"
     if post_url:
-        header += f"🔗 Open original post: {post_url}\n"
+        header += f"{L['open_post']}{post_url}\n"
 
     sections = [
         header.strip(),
         "━━━━━━━━━━━━━━━━━━━━",
-        f"📝 Transcript\n{transcript or 'No transcript returned.'}",
+        f"{L['transcript']}\n{transcript or L['no_transcript']}",
         "━━━━━━━━━━━━━━━━━━━━",
-        f"📌 Summary\n{summary or 'No summary returned.'}",
+        f"{L['summary']}\n{summary or L['no_summary']}",
         "━━━━━━━━━━━━━━━━━━━━",
-        _format_bullets("✨ Key Highlights", key_highlights),
+        _format_bullets(L["highlights"], key_highlights, empty_text=L["no_items"]),
         "━━━━━━━━━━━━━━━━━━━━",
-        _format_bullets("🎯 Takeaways", takeaways),
+        _format_bullets(L["takeaways"], takeaways, empty_text=L["no_items"]),
         "━━━━━━━━━━━━━━━━━━━━",
     ]
     if sentiment:
-        sections.append(_format_sentiment_section(sentiment))
+        sections.append(_format_sentiment_section(sentiment, lang=ui_lang))
         sections.append("━━━━━━━━━━━━━━━━━━━━")
 
     report = "\n\n".join(section for section in sections if section)
