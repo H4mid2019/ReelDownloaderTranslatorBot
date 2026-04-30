@@ -12,6 +12,7 @@ cobalt_cookies.json
 cookie_health_state.json
 ai_cache.db*
 output.logs
+cookie_health.log
 last_truth_id.txt
 *.mp4
 .idea/

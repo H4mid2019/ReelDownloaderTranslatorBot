@@ -19,7 +19,7 @@ import re
 import time
 from typing import Any, Iterable, Optional
 
-from config import GEMINI_API_KEY, GOOGLE_AI_MODEL
+from config import GEMINI_API_KEY, GOOGLE_AI_MODEL, GOOGLE_AI_MODEL_SENTIMENT
 
 try:
     from google import genai
@@ -127,12 +127,15 @@ _BRIEF_SENTIMENT_RESPONSE_SCHEMA: dict[str, Any] = {
 
 
 def make_video_brief_cache_key(
-    platform: str, post_id: str, model: str = GOOGLE_AI_MODEL,
+    platform: str, post_id: str, model: Optional[str] = None,
     with_sentiment: bool = False,
 ) -> str:
     """Create a stable cache key for `/db` (and `/dbs` when with_sentiment)."""
     suffix = ":sent" if with_sentiment else ""
-    return f"brief:{platform}:{post_id}:{model}{suffix}"
+    effective_model = model or (
+        GOOGLE_AI_MODEL_SENTIMENT if with_sentiment else GOOGLE_AI_MODEL
+    )
+    return f"brief:{platform}:{post_id}:{effective_model}{suffix}"
 
 
 def build_video_brief_prompt(
@@ -397,6 +400,74 @@ def _normalize_response(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+_SENTIMENT_ONLY_SCHEMA: dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": _SENTIMENT_PROPS,
+    "required": ["visual_sentiment", "vocal_sentiment", "text_sentiment"],
+}
+
+
+def _fetch_sentiment_only(
+    client: Any,
+    uploaded_file: Any,
+    transcript: str,
+    model_name: str,
+) -> Optional[dict[str, Any]]:
+    """Second-pass call asking ONLY for sentiment fields. Returns the
+    normalized sentiment dict, or None if the call fails or yields nothing."""
+    transcript_block = ""
+    if transcript:
+        snippet = transcript.strip()[:1500]
+        transcript_block = f"\n\nTranscript excerpt:\n{snippet}"
+
+    prompt = (
+        "Re-analyze the same video for sentiment ONLY. "
+        "Return ONLY a JSON object with exactly these fields, in English:\n\n"
+        '{\n'
+        '  "visual_sentiment": {"faces_visible": true|false, "notes": "..."},\n'
+        '  "vocal_sentiment": {"tone": "short label", "notes": "..."},\n'
+        '  "text_sentiment": {"overall": "positive|negative|neutral|mixed", '
+        '"emotions": ["...", "..."], "notes": "..."}\n'
+        '}\n\n'
+        "All three fields are MANDATORY. If faces are not visible, set "
+        "faces_visible=false and put 'No faces visible' in notes. "
+        "Present sentiment as observed cues only, not as a definitive "
+        "psychological diagnosis. No markdown, no commentary, JSON only."
+        + transcript_block
+    )
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[uploaded_file, prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_json_schema=_SENTIMENT_ONLY_SCHEMA,
+                temperature=0.2,
+                max_output_tokens=4096,
+            ),
+        )
+        raw = (response.text or "").strip()
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            stripped = re.sub(
+                r"^```(?:json)?|```$", "", raw, flags=re.IGNORECASE | re.MULTILINE
+            ).strip()
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Sentiment-only retry returned malformed JSON: %r", raw[:200]
+                )
+                return None
+        return _normalize_sentiment(payload)
+    except Exception as exc:
+        logger.warning("Sentiment-only retry failed: %s", exc)
+        return None
+
+
 def generate_video_brief(
     video_path: str,
     caption_context: Optional[str] = None,
@@ -422,7 +493,10 @@ def generate_video_brief(
         return {"error": "GEMINI_API_KEY not configured in .env"}
 
     client = client or genai.Client(api_key=GEMINI_API_KEY)
-    model_name = model or GOOGLE_AI_MODEL
+    # /dbs (with_sentiment) defaults to GOOGLE_AI_MODEL_SENTIMENT (Pro by default)
+    # because the Lite model often drops sentiment fields silently.
+    default_model = GOOGLE_AI_MODEL_SENTIMENT if with_sentiment else GOOGLE_AI_MODEL
+    model_name = model or default_model
     schema = (_BRIEF_SENTIMENT_RESPONSE_SCHEMA if with_sentiment
               else _BRIEF_RESPONSE_SCHEMA)
     uploaded_file = None
@@ -558,6 +632,21 @@ def generate_video_brief(
             return {"error": "Gemini did not return a transcript for this video."}
         if not normalized["summary"]:
             return {"error": "Gemini did not return a summary for this video."}
+
+        # Sentiment-only retry: gemini-flash-lite often drops the sentiment
+        # fields silently even with response_json_schema. Do a focused second
+        # call (the file is already uploaded — no extra upload cost).
+        if with_sentiment and "sentiment" not in normalized:
+            logger.info(
+                "First call returned no sentiment fields; "
+                "retrying with focused sentiment-only prompt."
+            )
+            sentiment = _fetch_sentiment_only(
+                client, uploaded_file, normalized.get("transcript", ""),
+                model_name,
+            )
+            if sentiment:
+                normalized["sentiment"] = sentiment
 
         normalized.update(
             {

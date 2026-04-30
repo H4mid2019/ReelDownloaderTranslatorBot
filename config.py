@@ -13,6 +13,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # Google AI Studio (Gemini) — used by /dl command fallback
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_AI_MODEL = os.getenv("GOOGLE_AI_MODEL", "gemini-2.5-flash-lite")
+# Model used by /dbs (detailed brief + sentiment). Defaults to a stronger model
+# because the Lite model often drops sentiment fields silently. Override via .env.
+GOOGLE_AI_MODEL_SENTIMENT = os.getenv("GOOGLE_AI_MODEL_SENTIMENT", "gemini-2.5-pro")
 
 # Output language for YouTube summaries (ISO 639-1 code, e.g. "fa", "en", "de")
 RESPONSE_LANGUAGE = os.getenv("RESPONSE_LANGUAGE", "fa")
