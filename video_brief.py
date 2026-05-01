@@ -93,6 +93,14 @@ def _labels(lang: Optional[str] = None) -> dict[str, str]:
     return _LABELS_BY_LANG.get(code, _LABELS_BY_LANG["en"])
 
 
+def _target_language_name(code: Optional[str] = None) -> str:
+    """Resolve the human-readable name of the target output language for
+    summary / highlights / takeaways / sentiment fields. Defaults to
+    RESPONSE_LANGUAGE from .env (Persian by default)."""
+    resolved = (code or RESPONSE_LANGUAGE or "en").strip().lower()
+    return _LANGUAGE_NAMES.get(resolved, "English")
+
+
 _LANGUAGE_NAMES = {
     "ar": "Arabic",
     "bg": "Bulgarian",
@@ -198,8 +206,14 @@ def make_video_brief_cache_key(
 def build_video_brief_prompt(
     platform: str,
     caption_context: Optional[str] = None,
+    target_language_code: Optional[str] = None,
 ) -> str:
-    """Build a Gemini prompt that preserves the source language."""
+    """Build a Gemini prompt for /db.
+
+    Hybrid language model: transcript stays VERBATIM in the spoken language,
+    everything else (summary, highlights, takeaways) is written in
+    `target_language_code` (defaults to RESPONSE_LANGUAGE — Persian by default).
+    """
     caption_block = ""
     if caption_context and caption_context.strip():
         caption_block = (
@@ -207,26 +221,29 @@ def build_video_brief_prompt(
             f"""{caption_context.strip()}"""
         )
 
+    target = _target_language_name(target_language_code)
     return (
         "You are an expert video analyst. "
         f"Analyze this {platform} video and return ONLY a JSON object.\n\n"
-        "Requirements:\n"
-        "- The transcript must be verbatim in the original spoken language.\n"
-        "- The summary, key highlights, and takeaways must be written in the SAME source language as the transcript.\n"
-        "- Do not translate the analysis into English unless the source language is English.\n"
-        "- If the video mixes languages, choose the dominant language and keep the entire report consistent in that language.\n"
+        "LANGUAGE RULES — NON-NEGOTIABLE:\n"
+        "- transcript: VERBATIM in the original spoken language of the video. "
+        "Do NOT translate the transcript.\n"
+        f"- summary, key_highlights, takeaways: ALL written in {target}, "
+        f"regardless of the spoken language. If the video is in any language "
+        f"other than {target}, you MUST translate the analysis into {target}.\n\n"
+        "Other requirements:\n"
         "- Keep key highlights concise and specific.\n"
         "- Keep takeaways actionable and practical.\n"
         "- Return no markdown fences, no commentary, no prose outside JSON.\n"
         "- Do NOT embed markdown (**, ##, -, *) inside any JSON string value.\n\n"
         "JSON shape:\n"
         "{\n"
-        '  "source_language_code": "ISO 639-1 code",\n'
-        '  "source_language_name": "Human readable language name",\n'
-        '  "transcript": "Verbatim transcript in the original language",\n'
-        '  "summary": "Brief summary in the original language",\n'
-        '  "key_highlights": ["...", "..."],\n'
-        '  "takeaways": ["...", "..."]\n'
+        '  "source_language_code": "ISO 639-1 code of the SPOKEN language",\n'
+        '  "source_language_name": "Human readable name of the spoken language",\n'
+        '  "transcript": "Verbatim transcript in the SPOKEN language",\n'
+        f'  "summary": "Brief summary in {target}",\n'
+        f'  "key_highlights": ["highlight in {target}", "..."],\n'
+        f'  "takeaways": ["takeaway in {target}", "..."]\n'
         "}" + caption_block
     )
 
@@ -234,8 +251,14 @@ def build_video_brief_prompt(
 def build_video_brief_with_sentiment_prompt(
     platform: str,
     caption_context: Optional[str] = None,
+    target_language_code: Optional[str] = None,
 ) -> str:
-    """Brief + sentiment (visual / vocal / text). Source-language preserving."""
+    """Brief + sentiment (visual / vocal / text).
+
+    Hybrid language model: transcript stays VERBATIM in the spoken language,
+    everything else is written in `target_language_code` (defaults to
+    RESPONSE_LANGUAGE — Persian by default).
+    """
     caption_block = ""
     if caption_context and caption_context.strip():
         caption_block = (
@@ -243,49 +266,50 @@ def build_video_brief_with_sentiment_prompt(
             f"""{caption_context.strip()}"""
         )
 
+    target = _target_language_name(target_language_code)
     return (
         "You are an expert multimodal video analyst. "
         f"Analyze this {platform} video and return ONLY a JSON object.\n\n"
-        "LANGUAGE RULE — NON-NEGOTIABLE:\n"
-        "Detect the spoken language of the video. EVERY string-valued field "
-        "(transcript, summary, key_highlights, takeaways, visual_sentiment.notes, "
-        "vocal_sentiment.tone, vocal_sentiment.notes, text_sentiment.overall, "
-        "text_sentiment.emotions, text_sentiment.notes) MUST be written in that "
-        "spoken language. If the video is in Persian, write everything in Persian. "
-        "If in Arabic, everything in Arabic. NEVER translate to English unless "
-        "the video is spoken in English.\n\n"
-        "Other requirements:\n"
+        "LANGUAGE RULES — NON-NEGOTIABLE:\n"
+        "- transcript: VERBATIM in the original spoken language of the video. "
+        "Do NOT translate the transcript.\n"
+        f"- ALL other string fields (summary, key_highlights, takeaways, "
+        f"visual_sentiment.notes, vocal_sentiment.tone, vocal_sentiment.notes, "
+        f"text_sentiment.overall, text_sentiment.emotions, text_sentiment.notes): "
+        f"written in {target}, REGARDLESS of the spoken language. "
+        f"If the video is not in {target}, you MUST translate the analysis "
+        f"and sentiment into {target}.\n\n"
+        "Sentiment specifics:\n"
         "- visual_sentiment.faces_visible (boolean): true only if at least one "
         "human face is clearly visible at some point.\n"
         "- visual_sentiment.notes: describe observable cues only "
-        "(e.g. 'speaker smiles when discussing X', 'tense posture during Y'). "
+        "(e.g. speaker smiles when discussing X, tense posture during Y). "
         "If no faces are visible, say so and describe other visual cues.\n"
-        "- vocal_sentiment.tone: short label "
-        "(e.g. 'calm and measured', 'agitated and rapid', 'monotone'). "
-        "vocal_sentiment.notes: brief explanation.\n"
+        "- vocal_sentiment.tone: short label (e.g. calm and measured, "
+        "agitated and rapid, monotone).\n"
         "- text_sentiment.overall: a short label for overall sentiment "
-        "(e.g. positive / negative / neutral / mixed in the source language).\n"
+        "(e.g. positive / negative / neutral / mixed).\n"
         "- text_sentiment.emotions: short list of detected emotional tones "
-        "(e.g. hopeful, sarcastic, resigned) in the source language.\n"
+        "(e.g. hopeful, sarcastic, resigned).\n"
         "- IMPORTANT: present sentiment as observed cues, not a definitive "
         "psychological diagnosis. Do not over-interpret.\n"
         "- Do NOT embed markdown (**, ##, -, *) inside any JSON string value.\n"
         "- Return no markdown fences, no commentary outside JSON.\n\n"
         "JSON shape:\n"
         "{\n"
-        '  "source_language_code": "ISO 639-1",\n'
-        '  "source_language_name": "Human readable",\n'
-        '  "transcript": "Verbatim in the spoken language",\n'
-        '  "summary": "Summary in the spoken language",\n'
-        '  "key_highlights": ["highlight in spoken language", "..."],\n'
-        '  "takeaways": ["takeaway in spoken language", "..."],\n'
+        '  "source_language_code": "ISO 639-1 of the SPOKEN language",\n'
+        '  "source_language_name": "Human readable name of the spoken language",\n'
+        '  "transcript": "Verbatim in the SPOKEN language",\n'
+        f'  "summary": "Summary in {target}",\n'
+        f'  "key_highlights": ["in {target}", "..."],\n'
+        f'  "takeaways": ["in {target}", "..."],\n'
         '  "visual_sentiment": {"faces_visible": true, '
-        '"notes": "in spoken language"},\n'
-        '  "vocal_sentiment": {"tone": "in spoken language", '
-        '"notes": "in spoken language"},\n'
-        '  "text_sentiment": {"overall": "in spoken language", '
-        '"emotions": ["in spoken language", "..."], '
-        '"notes": "in spoken language"}\n'
+        f'"notes": "in {target}"' + "},\n"
+        '  "vocal_sentiment": {' f'"tone": "in {target}", '
+        f'"notes": "in {target}"' + "},\n"
+        '  "text_sentiment": {' f'"overall": "in {target}", '
+        f'"emotions": ["in {target}", "..."], '
+        f'"notes": "in {target}"' + "}\n"
         "}" + caption_block
     )
 
@@ -293,8 +317,12 @@ def build_video_brief_with_sentiment_prompt(
 def _build_condensed_brief_prompt(
     platform: str,
     caption_context: Optional[str] = None,
+    target_language_code: Optional[str] = None,
 ) -> str:
-    """Fallback prompt for very long videos — requests condensed transcript."""
+    """Fallback prompt for very long videos — requests condensed transcript.
+
+    Same hybrid language model as the primary prompt.
+    """
     caption_block = ""
     if caption_context and caption_context.strip():
         caption_block = (
@@ -302,32 +330,29 @@ def _build_condensed_brief_prompt(
             f"""{caption_context.strip()}"""
         )
 
+    target = _target_language_name(target_language_code)
     return (
         "You are an expert video analyst. "
         f"Analyze this {platform} video and return ONLY a valid JSON object — "
         "no markdown, no prose, no commentary outside the JSON.\n\n"
-        "⚠️ CRITICAL LANGUAGE RULE — NON-NEGOTIABLE:\n"
-        "Detect the spoken language of the video. "
-        "Every single JSON field — transcript, summary, key_highlights, takeaways — "
-        "MUST be written in that same spoken language. "
-        "If the video is in Persian/Farsi, write ALL fields in Persian/Farsi. "
-        "If the video is in Arabic, write ALL fields in Arabic. "
-        "NEVER use English for any field unless the video itself is spoken in English. "
-        "Translating into English is strictly forbidden.\n\n"
-        "Additional requirements:\n"
-        "- transcript: condensed key-points (max ~800 words), NOT verbatim — "
-        "summarize repetitive sections but preserve the original spoken language.\n"
+        "LANGUAGE RULES — NON-NEGOTIABLE:\n"
+        "- transcript: condensed key-points (max ~800 words) in the original "
+        "SPOKEN language of the video. Do NOT translate the transcript.\n"
+        f"- summary, key_highlights, takeaways: written in {target}, "
+        f"REGARDLESS of the spoken language. If the video is not in {target}, "
+        f"you MUST translate the analysis into {target}.\n\n"
+        "Other requirements:\n"
         "- Do NOT embed markdown (**, ##, -, *) inside any JSON string value.\n"
         "- Keep key_highlights concise and specific.\n"
         "- Keep takeaways actionable and practical.\n\n"
         "JSON shape:\n"
         "{\n"
-        '  "source_language_code": "ISO 639-1 code e.g. fa",\n'
-        '  "source_language_name": "Human readable e.g. Persian",\n'
-        '  "transcript": "Condensed transcript in the SPOKEN language of the video",\n'
-        '  "summary": "Summary in the SPOKEN language of the video",\n'
-        '  "key_highlights": ["highlight in spoken language", "..."],\n'
-        '  "takeaways": ["takeaway in spoken language", "..."]\n'
+        '  "source_language_code": "ISO 639-1 of the SPOKEN language",\n'
+        '  "source_language_name": "Human readable name of the spoken language",\n'
+        '  "transcript": "Condensed transcript in the SPOKEN language",\n'
+        f'  "summary": "Summary in {target}",\n'
+        f'  "key_highlights": ["highlight in {target}", "..."],\n'
+        f'  "takeaways": ["takeaway in {target}", "..."]\n'
         "}" + caption_block
     )
 
@@ -474,23 +499,21 @@ def _fetch_sentiment_only(
     uploaded_file: Any,
     transcript: str,
     model_name: str,
-    source_language_name: str = "",
+    target_language_code: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Second-pass call asking ONLY for sentiment fields. Returns the
-    normalized sentiment dict, or None if the call fails or yields nothing."""
+    normalized sentiment dict, or None if the call fails or yields nothing.
+
+    All output is written in `target_language_code` (defaults to
+    RESPONSE_LANGUAGE — Persian by default), regardless of the video's
+    spoken language.
+    """
     transcript_block = ""
     if transcript:
         snippet = transcript.strip()[:1500]
         transcript_block = f"\n\nTranscript excerpt:\n{snippet}"
 
-    lang_clause = (
-        f"Write all string values in {source_language_name}, the spoken "
-        f"language of the video. Do NOT translate to English."
-        if source_language_name
-        else "Write all string values in the spoken language of the video. "
-             "Do NOT translate to English unless the video is in English."
-    )
-
+    target = _target_language_name(target_language_code)
     prompt = (
         "Re-analyze the same video for sentiment ONLY. "
         "Return ONLY a JSON object with exactly these fields:\n\n"
@@ -500,7 +523,8 @@ def _fetch_sentiment_only(
         '  "text_sentiment": {"overall": "short label", '
         '"emotions": ["...", "..."], "notes": "..."}\n'
         '}\n\n'
-        f"{lang_clause}\n"
+        f"Write ALL string values in {target}, regardless of the video's "
+        f"spoken language. If the video is not in {target}, translate to {target}.\n"
         "All three top-level fields are MANDATORY. If faces are not visible, "
         "set faces_visible=false and say so in notes. "
         "Present sentiment as observed cues only, not a definitive "
@@ -716,7 +740,6 @@ def generate_video_brief(
             sentiment = _fetch_sentiment_only(
                 client, uploaded_file, normalized.get("transcript", ""),
                 model_name,
-                source_language_name=normalized.get("source_language_name", ""),
             )
             if sentiment:
                 normalized["sentiment"] = sentiment
