@@ -38,7 +38,8 @@ All commands are registered in [bot.py](bot.py#L1627):
 | `/chatid` | Returns current chat ID — used to discover supergroup IDs after migration | Public |
 | `/d <url>` | Manual download path using Groq (primary AI) | Public |
 | `/dl <url>` | Manual download path using Google AI Studio fallback | Public |
-| `/db <url>` | Detailed source-language brief (transcript + summary in original language) | Public |
+| `/db <url>` | Detailed brief — transcript (verbatim, source language) + summary/highlights/takeaways (in `RESPONSE_LANGUAGE`) | Public |
+| `/dbs <url>` | Same as `/db` PLUS visual / vocal / text sentiment cues. Uses `GOOGLE_AI_MODEL_SENTIMENT` (Pro). Works for Instagram, X, YouTube | Public |
 | `/setcookie <sessionid>` | Update Instagram session ID at runtime + persist to .env | Admin only |
 | `/clearcache` | Wipe AI cache (`ai_cache` table) | Admin only |
 | `/report <range>` | Per-method download stats. Range: `30s` `12h` `1d` `7d` `1m` (=30d) `3M` (=months) | Admin only |
@@ -56,12 +57,14 @@ downloader.py             ALL download methods + the fallback-chain orchestrator
 config.py                 .env loader; all env-var-derived constants
 cache.py                  SQLite AI result cache (transcripts, translations)
 stats.py                  Per-download stats logger + /report formatter
-cookie_health.py          Standalone cron script — probes each cookie file
+cookie_health.py          Standalone cron — probes each cookie file; auto-refreshes on expiry
 diagnose.py               Standalone CLI — runs every method against a URL
+refresh_cookies.py        Runs INSIDE cloakbrowser Docker — logs in + extracts cookies
+refresh_cookies_run.sh    Host wrapper — runs the container, swaps cookies, notifies
 transcriber.py            Whisper (Groq) + Gemini fallback
 translator.py             Groq LLM + Gemini fallback for any-→-English
 truth_monitor.py          Background asyncio loop polling trumpstruth.org RSS
-video_brief.py            Gemini-based source-language brief generator
+video_brief.py            Gemini brief + sentiment (/db, /dbs); hybrid-language output
 youtube_summarizer.py     YouTube oEmbed + Gemini summary
 test_*.py                 Manual test scripts (not pytest)
 ```
@@ -123,8 +126,9 @@ Oracle server (130.61.180.78) ←─── WireGuard tunnel ───→ Home ro
 ### Docker containers (relevant ones)
 | Container | Image | Purpose |
 |-----------|-------|---------|
-| `cobalt` | `ghcr.io/imputnet/cobalt:11` | Self-hosted Cobalt API (`127.0.0.1:9000`). On `wg_net`. Cookies mounted from `cobalt_cookies.json` |
+| `cobalt` | `ghcr.io/imputnet/cobalt:11` | Self-hosted Cobalt API (`127.0.0.1:9000`). On `wg_net`. **COOKIE-FREE** (no `COOKIE_PATH`) — public content works via residential IP; stale cookies were *hurting* it, so we run it cookieless |
 | `wg_proxy` | `kalaksi/tinyproxy` | HTTP proxy on `127.0.0.1:3128` for yt-dlp / gallery-dl / instaloader. On `wg_net` |
+| `cloakhq/cloakbrowser` | (image, not a running container) | Anti-detect Chromium for cookie refresh. Run one-shot on `wg_net` (home IP) by `refresh_cookies_run.sh`. ARM64 ✓, ~568MB, bundles all libs |
 
 ### Tor (legacy, may be unused)
 - `tor` service active on `172.17.0.1:9050` (SOCKS5)
@@ -155,6 +159,17 @@ All keys in `.env` (gitignored). Get current values with `grep KEY= .env`.
 | Google AI Studio | `GEMINI_API_KEY` | Fallback transcription/translation (`/dl`), summaries, video briefs |
 | HikerAPI | `HIKERAPI_KEY` | Paid Instagram fallback. **Base URL:** `api.hikerapi.com/v1/media/by/url` (NOT `hikerapi.com/api/...` — that returns 404) |
 
+### Other notable env vars
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `RESPONSE_LANGUAGE` | `fa` | UI/analysis language for briefs + YouTube summaries. `/db` `/dbs` labels + summary/highlights/takeaways/sentiment all render in this language (transcript stays source-language) |
+| `GOOGLE_AI_MODEL` | `gemini-2.5-flash-lite` | Default Gemini model |
+| `GOOGLE_AI_MODEL_SENTIMENT` | `gemini-2.5-pro` | Model for `/dbs` (Lite drops sentiment fields; Pro honors the schema) |
+| `RESIDENTIAL_PROXY` | `http://127.0.0.1:3128` | tinyproxy → home IP, used by yt-dlp/gallery-dl/instaloader |
+| `IG_USERNAME` / `IG_PASSWORD` / `IG_TOTP_SECRET` | — | Credentials for the cookie-refresh login (account `h4mid2026`). TOTP is a base32 seed |
+| `AUTO_REFRESH_COOKIES` | `true` | When `cookies1.txt` expires, auto-run CloakBrowser refresh |
+| `AUTO_REFRESH_COOLDOWN_SEC` | `21600` (6h) | Min gap between auto-refresh attempts |
+
 ### Telegram chat IDs
 - `ADMIN_CHAT_ID = 619904882` — Hamid's personal chat (admin commands, alerts)
 - `TRUTH_ALERT_CHAT_ID = -1003954813646` — supergroup "اتاق خبر" (Newsroom).
@@ -165,19 +180,23 @@ All keys in `.env` (gitignored). Get current values with `grep KEY= .env`.
 
 ## 7. Cookie / session credentials
 
+**Active account:** `h4mid2026` (ds_user_id `38432121443`). NOT `MiddleEastPoliticalAnalyst`
+(that's stale in `INSTAGRAM_USERNAME` — historical, ignore it). `INSTALOADER_SESSION_USER=h4mid2026`.
+
 | File / var | Purpose | Notes |
 |------------|---------|-------|
-| `cookies1.txt`, `cookies2.txt`, `cookies3.txt` | Netscape format Instagram cookies | Pool, rotated automatically. `INSTAGRAM_COOKIES_FILES=cookies1.txt,cookies2.txt,cookies3.txt` |
-| `cobalt_cookies.json` | Same cookies converted to Cobalt's JSON format `{"instagram": ["k=v; ..."]}` | Mounted into Cobalt container at `/cookies.json` via `COOKIE_PATH` |
-| `~/.config/instaloader/session-<user>` | Native instaloader session (long-lived, weeks) | Filename is **lowercase** even if `INSTALOADER_SESSION_USER` has mixed case |
-| `INSTAGRAM_SESSION_IDS` | Comma-separated raw session IDs (alternative to cookie files) | Bot writes a temp Netscape cookie file from this |
+| `cookies1.txt` | Primary Netscape cookie (account `h4mid2026`) | The one the auto-refresh regenerates. Proven for media fetch |
+| `cookies2.txt`, `cookies3.txt` | Secondary cookies | Currently degraded (pass profile check, fail media fetch). Different/old sessions — not auto-refreshable |
+| `cobalt_cookies.json` | Cobalt JSON format `{"instagram": ["k=v; ..."]}` | **Currently UNUSED** — Cobalt runs cookie-free. Kept in sync by refresh for easy switch-back |
+| `~/.config/instaloader/session-h4mid2026` | Native instaloader session | Filename is **lowercase**. Rebuilt by the refresh from `cookies1.txt` |
+| `INSTAGRAM_SESSION_IDS` | Comma-separated raw session IDs (alternative) | Bot writes a temp Netscape cookie file from this |
 
-**Refresh procedure** (when `cookie_health.py` reports `expired`):
-1. Log into Instagram in a browser (chrome/firefox)
-2. Export cookies as Netscape `.txt` (e.g. with `Get cookies.txt LOCALLY` extension)
-3. Replace one of `cookies{1,2,3}.txt`
-4. Convert to Cobalt JSON and overwrite `cobalt_cookies.json`
-5. `docker restart cobalt`
+**Refresh — now automated** (CloakBrowser, see §9). Manual run:
+```bash
+./refresh_cookies_run.sh   # logs in h4mid2026 via home IP, swaps cookies1.txt + cobalt json + instaloader session
+```
+First login from a new fingerprint triggers a one-time IG **checkpoint** — clear it once in the
+Instagram app ("Was this you?"), then logins from the same residential IP + fingerprint are trusted.
 
 ---
 
@@ -196,12 +215,28 @@ Maintenance:
 
 ## 9. Background monitors
 
-### Cookie health (`cookie_health.py`)
+### Cookie health + auto-refresh (`cookie_health.py`)
 Hourly cron. For each cookie file, sends one HTTPS request via `wg_proxy` to
 `https://www.instagram.com/api/v1/users/web_profile_info/?username=instagram`.
 Classifies into states: `alive`, `expired`, `checkpoint`, `rate_limited`,
 `unknown_<code>`, `error_<exception>`. State persisted in
 `cookie_health_state.json`. **Telegram alert only on state CHANGE.**
+
+**Auto-refresh:** when `cookies1.txt` is `expired`, it runs `refresh_cookies_run.sh`
+automatically (CloakBrowser login → fresh cookies). Guards: only on `expired`
+(never `rate_limited`/`checkpoint`), only `cookies1.txt` (the account we have
+creds for), 6h cooldown lock (`.last_auto_refresh`) to prevent re-login loops.
+Disable with `AUTO_REFRESH_COOKIES=false`.
+
+### Cookie refresh pipeline (`refresh_cookies.py` + `refresh_cookies_run.sh`)
+`refresh_cookies_run.sh` (host) runs `cloakhq/cloakbrowser` one-shot on `wg_net`
+(home IP) executing `refresh_cookies.py` inside it. That script: opens IG login,
+fills user/pass (handles both `username/password` and `email/pass` field
+variants), generates the TOTP code (RFC 6238, stdlib), submits, extracts the
+fresh cookies → writes Netscape + Cobalt-JSON to a mounted dir. The wrapper then
+backs up the old cookie, swaps the new one into `cookies1.txt` + `cobalt_cookies.json`,
+rebuilds the instaloader session, restarts Cobalt only if it's cookie-configured,
+and Telegram-notifies. Auto-rollback: if login fails, the old cookie stays.
 
 ### WireGuard tunnel monitor (`wg_monitor.sh`)
 Every 5 min. Calls `curl --interface wg0 ifconfig.me` and verifies the result
@@ -246,6 +281,21 @@ every few hours. Different from the standalone `cookie_health.py` script.
    [wireguard_router_fix.md](wireguard_router_fix.md).
 10. **Tor exit nodes are blocked by Instagram.** Don't try to route Instagram
     requests via Tor — use the WG tunnel instead.
+11. **Cobalt runs COOKIE-FREE on purpose.** Stale cookies in `cobalt_cookies.json`
+    actively *broke* Cobalt (it sends a dead sessionid → IG rejects, vs. a clean
+    anonymous request succeeding via residential IP). Public content works
+    cookieless. Don't re-add `COOKIE_PATH` unless you need private content AND
+    have fresh cookies. Private content is still covered by gallery-dl/instaloader
+    later in the chain.
+12. **Automated login triggers a one-time IG checkpoint** per new device/fingerprint.
+    `refresh_cookies_run.sh` will report `REFRESH FAILED` / the new session shows
+    `checkpoint_required`. Clear it once in the Instagram app, then it's trusted.
+13. **`/dbs` needs the Pro model.** `gemini-2.5-flash-lite` silently omits the
+    sentiment fields even with a strict JSON schema. `GOOGLE_AI_MODEL_SENTIMENT`
+    defaults to `gemini-2.5-pro`. There's also a sentiment-only retry fallback.
+14. **Account/username mismatch.** The working cookie is `h4mid2026` but
+    `INSTAGRAM_USERNAME` still says `MiddleEastPoliticalAnalyst`. The refresh +
+    instaloader use `IG_USERNAME` / `INSTALOADER_SESSION_USER` = `h4mid2026`.
 
 ---
 
@@ -284,13 +334,15 @@ iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o eth0 -j MASQUERADE
 ```
 Within 5 min the monitor will confirm "restored".
 
-### "All cookies report expired"
-1. Log into Instagram in a browser
-2. Export cookies → replace `cookies1.txt`
-3. Update `cobalt_cookies.json` (use the python snippet in
-   [wireguard_router_fix.md](wireguard_router_fix.md) or this doc's section 7)
-4. `docker restart cobalt`
-5. `.venv/bin/python cookie_health.py` to re-probe
+### "Cookies expired" / "HikerAPI bleeding"
+First try the automated refresh:
+```bash
+./refresh_cookies_run.sh
+```
+If it reports a checkpoint, clear it once in the Instagram app, then re-run.
+(The hourly `cookie_health.py` does this automatically when `cookies1.txt` expires.)
+Manual fallback: log in via a browser, export Netscape cookies → replace `cookies1.txt`.
+Note Cobalt is cookie-free so it's unaffected by cookie expiry.
 
 ### "HikerAPI balance dropping fast"
 Means too many requests are reaching the last fallback. Run:
@@ -334,3 +386,18 @@ Cloud Agent — must be active: `sudo snap start oracle-cloud-agent`).
   Expanded `/p/` chain to include instaloader and HikerAPI fallbacks.
 - **2026-04-28** — Cookie monitor caught first transient `error_ReadTimeout`
   (false positive — network blip).
+- **2026-04-30** — `/dbs` command: detailed brief + visual/vocal/text sentiment.
+  Added `GOOGLE_AI_MODEL_SENTIMENT` (Pro) because Lite drops sentiment fields;
+  added a sentiment-only retry. `/db` + `/dbs` extended to YouTube.
+- **2026-05-01** — Switched brief output to **hybrid language**: transcript stays
+  verbatim source-language, everything else (summary/highlights/takeaways/sentiment
+  + structural labels) renders in `RESPONSE_LANGUAGE` (Persian). Localized labels.
+- **2026-05-23** — Fixed Cobalt + instaloader: `cobalt_cookies.json` was stale
+  (old sessionid); discovered the working account is `h4mid2026` not
+  `MiddleEastPoliticalAnalyst`; rebuilt instaloader session + updated
+  `INSTALOADER_SESSION_USER`.
+- **2026-05-24** — Switched Cobalt to **cookie-free** (stale cookies were hurting
+  it; residential IP handles public content). Built CloakBrowser-based cookie
+  **auto-refresh** (`refresh_cookies.py` + `refresh_cookies_run.sh`) wired into
+  `cookie_health.py` (refresh-on-expiry, 6h cooldown). Confirmed automated login
+  triggers a one-time device checkpoint that must be cleared manually once.

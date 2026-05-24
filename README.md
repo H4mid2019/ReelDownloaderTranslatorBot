@@ -1,6 +1,6 @@
 # 📸 Multipurpose Downloader & Translator Bot
 
-A powerful Telegram bot that downloads media from **Instagram** and **X/Twitter**, transcribes videos, and translates content automatically. It also includes a specialized monitor for **Truth Social** alerts.
+A powerful Telegram bot that downloads media from **Instagram**, **X/Twitter**, and **YouTube**, transcribes videos, translates content automatically, and can produce detailed AI briefs with sentiment analysis. It also includes a specialized monitor for **Truth Social** alerts.
 
 ## 🚀 Quick Setup
 
@@ -20,19 +20,21 @@ Simply send or forward any supported link to the bot. It will automatically dete
 
 - **Automated:** No commands needed! Just paste a link.
 - **Manual:** Use `/d <url>` if auto-detection doesn't trigger.
-- **Detailed Brief:** Use `/db <url>` to get a full transcript + AI summary in the video's source language.
+- **Detailed Brief:** Use `/db <url>` for a transcript + AI summary, or `/dbs <url>` to also get sentiment analysis.
 
 ### Bot Commands
 
 | Command | Description |
 | --- | --- |
 | `/start` | Show the main command menu |
-| `/help` | Show detailed help |
+| `/help` | Show detailed help (lists every command) |
 | `/d <url>` | Manual download (if auto-detect fails) |
 | `/dl <url>` | Manual download using Local AI Fallback |
-| `/db <url>` | Detailed source-language transcript + summary brief |
+| `/db <url>` | Detailed brief — transcript + summary + highlights + takeaways |
+| `/dbs <url>` | Detailed brief **plus** visual / vocal / text sentiment analysis |
 | `/chatid` | Get the current chat ID |
-| `/clearcache` | Clear the AI response cache |
+| `/clearcache` | *(Admin only)* Clear the AI response cache |
+| `/report <range>` | *(Admin only)* Per-method download stats (e.g. `1d`, `12h`, `1m`=month) |
 | `/setcookie <id>` | *(Admin only)* Update Instagram session ID without SSH or restart |
 
 ## ✨ Features
@@ -48,11 +50,12 @@ Simply send or forward any supported link to the bot. It will automatically dete
   - Uses **Groq Whisper** for lightning-fast transcription.
   - Auto-detects video language.
   - **Translates all non-English videos to English** (Except Persian).
-- **Detailed Brief (`/db`):**
+- **Detailed Brief (`/db`) & Sentiment (`/dbs`):**
   - Uploads the video directly to **Gemini** for native video understanding.
-  - Returns a verbatim transcript, summary, key highlights, and takeaways — all in the **source language** of the video (including Persian/Farsi, Arabic, etc.).
+  - **Hybrid language output:** the transcript stays **verbatim in the spoken language**, while the summary, key highlights, and takeaways are written in your configured `RESPONSE_LANGUAGE` (Persian by default). Set `RESPONSE_LANGUAGE=en` for English.
+  - `/dbs` adds a **sentiment** section — observed facial cues, vocal tone, and text sentiment (also in `RESPONSE_LANGUAGE`). Uses a stronger model (`GOOGLE_AI_MODEL_SENTIMENT`, default `gemini-2.5-pro`).
   - Results are cached to avoid redundant API calls.
-  - Supported platforms: Instagram video posts, X/Twitter video posts.
+  - Supported platforms: Instagram, X/Twitter, and **YouTube** videos.
 - **YouTube Summarizer:**
   - Paste any YouTube link and the bot fetches metadata and generates an AI summary via Gemini.
 - **Truth Social Monitor:**
@@ -161,14 +164,25 @@ The bot will:
 
 This command is restricted to `ADMIN_CHAT_ID`. Get your chat ID via `/chatid` in a private chat with the bot.
 
-### Expiry alerts
+### Expiry alerts & automated refresh
 
-Set `ADMIN_CHAT_ID` in `.env` (falls back to `TRUTH_ALERT_CHAT_ID` if not set). The bot checks cookie health every 6 hours and sends a Telegram notification when the session pool is expired, before users start seeing errors.
+Set `ADMIN_CHAT_ID` in `.env` (falls back to `TRUTH_ALERT_CHAT_ID` if not set). An hourly cron (`cookie_health.py`) probes each cookie and sends a Telegram notification when a session's state changes (expired / checkpoint / rate-limited / recovered).
+
+**Automated refresh (optional):** if you provide login credentials, the health check can auto-renew the primary cookie when it expires — no manual export needed. It drives a stealth headless browser ([CloakBrowser](https://github.com/CloakHQ/CloakBrowser), via Docker) that logs in, handles TOTP 2FA, and writes a fresh cookie.
 
 ```env
-ADMIN_CHAT_ID=your_personal_chat_id
+IG_USERNAME=your_account
+IG_PASSWORD=your_password
+IG_TOTP_SECRET=base32seed          # from the authenticator-app setup
+AUTO_REFRESH_COOKIES=true          # default; set false to disable
 ```
 
+> The **first** automated login from a new server/fingerprint triggers a one-time Instagram "Was this you?" checkpoint — approve it once in the Instagram app, after which logins from that machine are trusted. Manual run: `./refresh_cookies_run.sh`.
+
 > **Note:** `INSTAGRAM_COOKIES_FROM_BROWSER` (auto-extract from Chrome/Firefox) is available but **only works on desktop machines with a GUI browser installed** — not on headless servers (Ubuntu ARM, Oracle Cloud, VPS, etc.).
+
+## 🌐 Residential IP (advanced, optional)
+
+Instagram blocks most datacenter IPs. If you run on a VPS and have downloads failing, you can route the relevant traffic through a **residential IP** (e.g. your home connection) so requests look like a normal user. This project supports a WireGuard tunnel + Docker `wg_net` setup where self-hosted **Cobalt** and the download tools exit via a home router. Full setup and troubleshooting are documented in [wireguard_router_fix.md](wireguard_router_fix.md) and [CONTEXT.md](CONTEXT.md). With a residential IP, Cobalt downloads public Instagram content **without cookies at all**.
 
 ⚠️ **OPEN-SOURCE** - Non-commercial use only. See LICENSE.
