@@ -16,5 +16,6 @@ cookie_health.log
 last_truth_id.txt
 *.mp4
 .cookie_refresh_out/
+.cb_profile/
 cookies1.txt.bak.*
 .idea/

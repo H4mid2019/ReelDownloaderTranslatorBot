@@ -60,12 +60,17 @@ def main() -> int:
     out_dir = os.getenv("OUTPUT_DIR", "/output")
     os.makedirs(out_dir, exist_ok=True)
 
-    from cloakbrowser import launch
+    # Persistent profile → Instagram recognizes the same "device" each run
+    # (keeps datr/ig_did/mid + a stable fingerprint), so after the one-time
+    # checkpoint is cleared, future logins are trusted and won't re-checkpoint.
+    profile_dir = os.getenv("PROFILE_DIR", "/profile")
+    os.makedirs(profile_dir, exist_ok=True)
 
-    log(f"launching stealth browser for {username!r}")
-    browser = launch(headless=True)
-    page = browser.new_page()
-    context = page.context
+    from cloakbrowser import launch_persistent_context
+
+    log(f"launching stealth browser (persistent profile) for {username!r}")
+    context = launch_persistent_context(profile_dir, headless=True)
+    page = context.pages[0] if context.pages else context.new_page()
 
     try:
         page.goto("https://www.instagram.com/accounts/login/", timeout=60000,
@@ -145,7 +150,7 @@ def main() -> int:
 
     finally:
         try:
-            browser.close()
+            context.close()
         except Exception:
             pass
 

@@ -30,14 +30,22 @@ fi
 
 rm -rf "$OUT_DIR"; mkdir -p "$OUT_DIR"
 
+# Persistent browser profile — makes IG see the SAME device each run (keeps
+# datr/ig_did/mid + stable fingerprint), so logins stay trusted after the
+# one-time checkpoint is cleared. Survives across refreshes.
+PROFILE_DIR="$PROJECT_DIR/.cb_profile"
+mkdir -p "$PROFILE_DIR"
+
 echo "Running CloakBrowser login for $IG_USERNAME ..."
 docker run --rm --network wg_net \
     -e IG_USERNAME="$IG_USERNAME" \
     -e IG_PASSWORD="$IG_PASSWORD" \
     -e IG_TOTP_SECRET="$IG_TOTP_SECRET" \
     -e OUTPUT_DIR=/output \
+    -e PROFILE_DIR=/profile \
     -v "$PROJECT_DIR/refresh_cookies.py:/refresh_cookies.py:ro" \
     -v "$OUT_DIR:/output" \
+    -v "$PROFILE_DIR:/profile" \
     cloakhq/cloakbrowser python /refresh_cookies.py
 RC=$?
 
