@@ -15,4 +15,6 @@ output.logs
 cookie_health.log
 last_truth_id.txt
 *.mp4
+.cookie_refresh_out/
+cookies1.txt.bak.*
 .idea/

@@ -21,7 +21,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import sys
+import time
 from typing import Dict, Optional
 
 import requests
@@ -34,9 +36,17 @@ from config import (  # noqa: E402
     TELEGRAM_BOT_TOKEN,
 )
 
-STATE_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "cookie_health_state.json"
-)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+STATE_PATH = os.path.join(_HERE, "cookie_health_state.json")
+
+# Auto-refresh: when the primary cookie expires, run the CloakBrowser refresh.
+# Only cookies1.txt is auto-refreshable (the account we hold credentials for);
+# cookies2/3 are other accounts and only get an alert.
+AUTO_REFRESH = os.getenv("AUTO_REFRESH_COOKIES", "true").lower() in ("1", "true", "yes")
+REFRESH_SCRIPT = os.path.join(_HERE, "refresh_cookies_run.sh")
+REFRESH_TARGET = "cookies1.txt"
+REFRESH_LOCK = os.path.join(_HERE, ".last_auto_refresh")
+REFRESH_COOLDOWN_SEC = int(os.getenv("AUTO_REFRESH_COOLDOWN_SEC", str(6 * 3600)))
 
 CHECK_URL = (
     "https://www.instagram.com/api/v1/users/web_profile_info/?username=instagram"
@@ -141,6 +151,38 @@ def telegram(message: str) -> None:
         log.warning(f"telegram send failed: {e}")
 
 
+def _refresh_on_cooldown() -> bool:
+    """True if a refresh was attempted within the cooldown window."""
+    try:
+        return (time.time() - os.path.getmtime(REFRESH_LOCK)) < REFRESH_COOLDOWN_SEC
+    except OSError:
+        return False
+
+
+def trigger_refresh() -> str:
+    """Run refresh_cookies_run.sh. Returns a short status string."""
+    # Touch the lock first so a failing refresh doesn't retry every hour.
+    try:
+        open(REFRESH_LOCK, "w").close()
+    except OSError:
+        pass
+    if not os.path.exists(REFRESH_SCRIPT):
+        return "refresh script missing"
+    try:
+        r = subprocess.run(
+            ["bash", REFRESH_SCRIPT],
+            capture_output=True, text=True, timeout=300, cwd=_HERE,
+        )
+        if r.returncode == 0:
+            return "ok"
+        tail = (r.stdout or r.stderr or "").strip().splitlines()[-1:] or [""]
+        return f"failed rc={r.returncode}: {tail[0][:120]}"
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e}"
+
+
 def main() -> int:
     if not INSTAGRAM_COOKIES_FILES:
         log.warning("no cookie files configured")
@@ -161,8 +203,29 @@ def main() -> int:
         new_state[cf] = cur
         log.info(f"{cf}: {cur} (was {prev})")
 
+        name = os.path.basename(cf)
+
+        # Auto-refresh the primary cookie when it expires (independent of the
+        # state-change gate, so a persistently-expired cookie keeps retrying
+        # after each cooldown window — not just on the first transition).
+        if (
+            cur == "expired"
+            and name == REFRESH_TARGET
+            and AUTO_REFRESH
+            and not _refresh_on_cooldown()
+        ):
+            log.info(f"{name} expired — triggering auto-refresh")
+            result = trigger_refresh()
+            log.info(f"auto-refresh result: {result}")
+            if result == "ok":
+                new_cur = check_cookie(cf)
+                new_state[cf] = new_cur
+                changes.append(f"REFRESHED {name}: auto-refresh -> {new_cur}")
+            else:
+                changes.append(f"REFRESH FAILED {name}: {result}")
+            continue  # handled — skip the generic state-change messaging
+
         if cur != prev:
-            name = os.path.basename(cf)
             if cur == "alive" and prev != "unknown":
                 changes.append(f"OK {name}: recovered (was {prev})")
             elif cur == "expired":
