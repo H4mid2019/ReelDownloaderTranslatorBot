@@ -238,6 +238,13 @@ backs up the old cookie, swaps the new one into `cookies1.txt` + `cobalt_cookies
 rebuilds the instaloader session, restarts Cobalt only if it's cookie-configured,
 and Telegram-notifies. Auto-rollback: if login fails, the old cookie stays.
 
+**Persistent device profile.** The browser launches via `launch_persistent_context("/profile")`,
+backed by a mounted `.cb_profile/` dir (gitignored, ~22M). This keeps IG's device
+cookies (`datr`/`ig_did`/`mid`), localStorage, and a stable fingerprint across runs,
+so CloakBrowser looks like the **same returning device** — the trust from clearing
+the one-time checkpoint carries forward and future logins shouldn't re-checkpoint.
+Deleting `.cb_profile/` resets to a "new device" (will checkpoint again).
+
 ### WireGuard tunnel monitor (`wg_monitor.sh`)
 Every 5 min. Calls `curl --interface wg0 ifconfig.me` and verifies the result
 differs from server's direct IP. Self-heals `AllowedIPs` drift; alerts on
@@ -288,8 +295,9 @@ every few hours. Different from the standalone `cookie_health.py` script.
     have fresh cookies. Private content is still covered by gallery-dl/instaloader
     later in the chain.
 12. **Automated login triggers a one-time IG checkpoint** per new device/fingerprint.
-    `refresh_cookies_run.sh` will report `REFRESH FAILED` / the new session shows
-    `checkpoint_required`. Clear it once in the Instagram app, then it's trusted.
+    Clear it once in the Instagram app, then it's trusted. The persistent profile
+    (`.cb_profile/`) preserves that trust across runs — but **deleting `.cb_profile/`
+    resets to a new device** and will checkpoint again.
 13. **`/dbs` needs the Pro model.** `gemini-2.5-flash-lite` silently omits the
     sentiment fields even with a strict JSON schema. `GOOGLE_AI_MODEL_SENTIMENT`
     defaults to `gemini-2.5-pro`. There's also a sentiment-only retry fallback.
@@ -368,6 +376,10 @@ Cloud Agent — must be active: `sudo snap start oracle-cloud-agent`).
 - `cookie_health.log` — cookie monitor log (gitignored)
 - `wg_safety_restore.sh` — emergency rollback script for WG (in `~/`)
 - `iptables_backup_*.bak` — iptables backups in `~/`
+- `.cb_profile/` — persistent CloakBrowser device profile (gitignored, ~22M).
+  Don't delete unless you want to re-establish device trust from scratch.
+- `.cookie_refresh_out/` — scratch output of the last refresh (gitignored)
+- `cookies1.txt.bak.*` — auto-backups made before each cookie swap (gitignored)
 
 ---
 
@@ -401,3 +413,6 @@ Cloud Agent — must be active: `sudo snap start oracle-cloud-agent`).
   **auto-refresh** (`refresh_cookies.py` + `refresh_cookies_run.sh`) wired into
   `cookie_health.py` (refresh-on-expiry, 6h cooldown). Confirmed automated login
   triggers a one-time device checkpoint that must be cleared manually once.
+  Then switched the refresh to a **persistent browser profile** (`.cb_profile/`)
+  so CloakBrowser is a remembered device — checkpoint trust now carries across
+  runs instead of risking a fresh-device challenge each time.

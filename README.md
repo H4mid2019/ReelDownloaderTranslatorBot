@@ -177,7 +177,9 @@ IG_TOTP_SECRET=base32seed          # from the authenticator-app setup
 AUTO_REFRESH_COOKIES=true          # default; set false to disable
 ```
 
-> The **first** automated login from a new server/fingerprint triggers a one-time Instagram "Was this you?" checkpoint — approve it once in the Instagram app, after which logins from that machine are trusted. Manual run: `./refresh_cookies_run.sh`.
+The browser uses a **persistent profile** (`.cb_profile/`), so Instagram sees the same trusted "device" on every login — just like your everyday browser keeps you signed in.
+
+> The **first** automated login from a new machine triggers a one-time Instagram "Was this you?" checkpoint — approve it once in the Instagram app. After that the persistent profile keeps the device trusted, so subsequent logins won't re-prompt. Manual run: `./refresh_cookies_run.sh`. (Deleting `.cb_profile/` resets it to a new device.)
 
 > **Note:** `INSTAGRAM_COOKIES_FROM_BROWSER` (auto-extract from Chrome/Firefox) is available but **only works on desktop machines with a GUI browser installed** — not on headless servers (Ubuntu ARM, Oracle Cloud, VPS, etc.).
 
