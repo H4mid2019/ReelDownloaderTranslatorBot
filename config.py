@@ -16,6 +16,9 @@ GOOGLE_AI_MODEL = os.getenv("GOOGLE_AI_MODEL", "gemini-2.5-flash-lite")
 # Model used by /dbs (detailed brief + sentiment). Defaults to a stronger model
 # because the Lite model often drops sentiment fields silently. Override via .env.
 GOOGLE_AI_MODEL_SENTIMENT = os.getenv("GOOGLE_AI_MODEL_SENTIMENT", "gemini-2.5-pro")
+# How long to wait for Gemini to process an uploaded video file (Instagram/X
+# briefs). Default 400s; bump higher for very large clips.
+GEMINI_UPLOAD_TIMEOUT_SEC = int(os.getenv("GEMINI_UPLOAD_TIMEOUT_SEC", "400"))
 
 # Output language for YouTube summaries (ISO 639-1 code, e.g. "fa", "en", "de")
 RESPONSE_LANGUAGE = os.getenv("RESPONSE_LANGUAGE", "fa")

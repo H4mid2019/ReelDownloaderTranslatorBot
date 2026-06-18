@@ -840,48 +840,56 @@ async def process_detailed_url(
         )
         return
 
+    # YouTube: skip download entirely — Gemini ingests the URL natively
+    # (no /db Files-API upload, no yt-dlp dependency for the brief).
+    is_youtube = platform == "youtube"
+
     status_msg = await update.message.reply_text(
-        f"⏳ Downloading from {platform} for a detailed brief..."
+        "🤖 Generating brief from YouTube link..."
+        if is_youtube
+        else f"⏳ Downloading from {platform} for a detailed brief..."
     )
 
     downloaded_path: Optional[str] = None
     brief_status = None
     try:
-        result = await queued_download_video(url)
+        result_post_url = url
+        result_platform = platform
+        result_caption: Optional[str] = None
 
-        if result.error:
-            await status_msg.edit_text(f"❌ Download failed: {result.error}")
-            return
+        if is_youtube:
+            post_id_tuple = extract_post_id(url)
+        else:
+            result = await queued_download_video(url)
+            if result.error:
+                await status_msg.edit_text(f"❌ Download failed: {result.error}")
+                return
+            if result.media_type != "video" or len(result.file_paths) != 1:
+                await status_msg.edit_text(
+                    "❌ /db only supports single video posts. Please send an Instagram or X/Twitter video link."
+                )
+                return
+            downloaded_path = result.file_path
+            result_post_url = result.post_url
+            result_platform = result.platform
+            result_caption = result.caption or result.tweet_text
 
-        if result.media_type != "video" or len(result.file_paths) != 1:
-            await status_msg.edit_text(
-                "❌ /db only supports single video posts. Please send an Instagram or X/Twitter video link."
+            sent_ok = await send_video_or_chunks(
+                update, result.file_path, result.file_size_bytes,
+                result.file_size_bytes / (1024 * 1024),
+                "Unknown", result.platform,
+                post_caption=result.caption, status_msg=status_msg,
             )
-            return
-
-        downloaded_path = result.file_path
-
-        sent_ok = await send_video_or_chunks(
-            update,
-            result.file_path,
-            result.file_size_bytes,
-            result.file_size_bytes / (1024 * 1024),
-            "Unknown",
-            result.platform,
-            post_caption=result.caption,
-            status_msg=status_msg,
-        )
-
-        if not sent_ok and update.message:
-            await update.message.reply_text(
-                "⚠️ I could not send the video itself, but I can still generate the detailed brief."
-            )
+            if not sent_ok and update.message:
+                await update.message.reply_text(
+                    "⚠️ I could not send the video itself, but I can still generate the detailed brief."
+                )
+            post_id_tuple = extract_post_id(url)
 
         brief_status = await update.message.reply_text(
             "🤖 Generating transcript and detailed brief with Gemini..."
         )
 
-        post_id_tuple = extract_post_id(url)
         cache_key = None
         cached_brief = None
         if _cache and post_id_tuple:
@@ -897,7 +905,7 @@ async def process_detailed_url(
             except Exception:
                 pass
             for message in build_video_brief_messages(
-                cached_brief, result.post_url, result.platform
+                cached_brief, result_post_url, result_platform
             ):
                 if update.message:
                     await update.message.reply_text(
@@ -909,9 +917,10 @@ async def process_detailed_url(
         brief_result = await loop.run_in_executor(
             None,
             lambda: generate_video_brief(
-                result.file_path,
-                caption_context=result.caption or result.tweet_text,
-                platform=result.platform,
+                video_path=downloaded_path,
+                youtube_url=(url if is_youtube else None),
+                caption_context=result_caption,
+                platform=result_platform,
                 with_sentiment=with_sentiment,
             ),
         )
@@ -929,7 +938,7 @@ async def process_detailed_url(
             pass
 
         for message in build_video_brief_messages(
-            brief_result, result.post_url, result.platform
+            brief_result, result_post_url, result_platform
         ):
             if update.message:
                 await update.message.reply_text(message, disable_web_page_preview=True)

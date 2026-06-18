@@ -21,6 +21,7 @@ from typing import Any, Iterable, Optional
 
 from config import (
     GEMINI_API_KEY,
+    GEMINI_UPLOAD_TIMEOUT_SEC,
     GOOGLE_AI_MODEL,
     GOOGLE_AI_MODEL_SENTIMENT,
     RESPONSE_LANGUAGE,
@@ -400,7 +401,7 @@ def _guess_mime_type(video_path: str) -> str:
 
 
 def _wait_for_file_processing(
-    client: Any, uploaded_file: Any, timeout_seconds: int = 120
+    client: Any, uploaded_file: Any, timeout_seconds: int = GEMINI_UPLOAD_TIMEOUT_SEC
 ) -> Any:
     """Poll the Gemini Files API until the uploaded file is ready."""
     deadline = time.monotonic() + timeout_seconds
@@ -565,20 +566,24 @@ def _fetch_sentiment_only(
 
 
 def generate_video_brief(
-    video_path: str,
+    video_path: Optional[str] = None,
     caption_context: Optional[str] = None,
     platform: str = "instagram",
     model: Optional[str] = None,
     client: Any | None = None,
     with_sentiment: bool = False,
+    youtube_url: Optional[str] = None,
 ) -> dict[str, Any]:
     """Generate transcript, summary, highlights and takeaways for a video.
 
-    When with_sentiment=True, also returns visual / vocal / text sentiment
-    observations (used by the /dbs command).
+    When ``youtube_url`` is given, Gemini ingests the URL natively (no download
+    or upload). Otherwise ``video_path`` must point to a local file we upload
+    via the Files API. ``with_sentiment=True`` adds the sentiment fields.
     """
-    if not os.path.exists(video_path):
-        return {"error": f"File not found: {video_path}"}
+    use_youtube_url = bool(youtube_url)
+    if not use_youtube_url:
+        if not video_path or not os.path.exists(video_path):
+            return {"error": f"File not found: {video_path}"}
 
     if not _GOOGLE_AI_AVAILABLE:
         return {
@@ -596,20 +601,28 @@ def generate_video_brief(
     schema = (_BRIEF_SENTIMENT_RESPONSE_SCHEMA if with_sentiment
               else _BRIEF_RESPONSE_SCHEMA)
     uploaded_file = None
+    # YouTube native ingestion: pass the URL to Gemini directly (no download).
+    video_part: Any
+    if use_youtube_url:
+        video_part = types.Part(file_data=types.FileData(
+            file_uri=youtube_url, mime_type="video/*",
+        ))
 
     try:
-        uploaded_file = client.files.upload(
-            file=video_path,
-            config=types.UploadFileConfig(mime_type=_guess_mime_type(video_path)),
-        )
-        uploaded_file = _wait_for_file_processing(client, uploaded_file)
+        if not use_youtube_url:
+            uploaded_file = client.files.upload(
+                file=video_path,
+                config=types.UploadFileConfig(mime_type=_guess_mime_type(video_path)),
+            )
+            uploaded_file = _wait_for_file_processing(client, uploaded_file)
+            video_part = uploaded_file
 
         prompt = (build_video_brief_with_sentiment_prompt(platform, caption_context)
                   if with_sentiment
                   else build_video_brief_prompt(platform, caption_context))
         response = client.models.generate_content(
             model=model_name,
-            contents=[uploaded_file, prompt],
+            contents=[video_part, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_json_schema=schema,
@@ -635,7 +648,7 @@ def generate_video_brief(
                 )
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=[uploaded_file, condensed_prompt],
+                    contents=[video_part, condensed_prompt],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_json_schema=_BRIEF_RESPONSE_SCHEMA,
@@ -669,7 +682,7 @@ def generate_video_brief(
                         )
                         response = client.models.generate_content(
                             model=escalation_model,
-                            contents=[uploaded_file, condensed_prompt],
+                            contents=[video_part, condensed_prompt],
                             config=types.GenerateContentConfig(
                                 response_mime_type="application/json",
                                 response_json_schema=_BRIEF_RESPONSE_SCHEMA,
@@ -738,7 +751,7 @@ def generate_video_brief(
                 "retrying with focused sentiment-only prompt."
             )
             sentiment = _fetch_sentiment_only(
-                client, uploaded_file, normalized.get("transcript", ""),
+                client, video_part, normalized.get("transcript", ""),
                 model_name,
             )
             if sentiment:
