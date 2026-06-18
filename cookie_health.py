@@ -48,18 +48,39 @@ REFRESH_TARGET = "cookies1.txt"
 REFRESH_LOCK = os.path.join(_HERE, ".last_auto_refresh")
 REFRESH_COOLDOWN_SEC = int(os.getenv("AUTO_REFRESH_COOLDOWN_SEC", str(6 * 3600)))
 
-CHECK_URL = (
-    "https://www.instagram.com/api/v1/users/web_profile_info/?username=instagram"
-)
-CHECK_HEADERS = {
-    "user-agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "x-ig-app-id": "936619743392459",
-    "accept": "*/*",
-    "accept-language": "en-US,en;q=0.9",
-}
+# Rotate probe targets + user-agents so Instagram doesn't pattern-throttle
+# the hourly health check. Same UA + same target + same endpoint every hour
+# was getting blanket 429s and confusing the auto-refresh trigger.
+_PROBE_TARGETS = ["instagram", "natgeo", "nasa", "nike", "9gag", "bbc"]
+_PROBE_UAS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) "
+    "Gecko/20100101 Firefox/130.0",
+]
+
+
+def _build_probe() -> tuple[str, dict]:
+    """Pick a (URL, headers) tuple — rotates by hour so probes don't look
+    like a fixed pattern to Instagram."""
+    import hashlib
+    import time as _t
+    bucket = int(_t.time()) // 3600
+    target = _PROBE_TARGETS[bucket % len(_PROBE_TARGETS)]
+    h = int(hashlib.md5(f"{bucket}".encode()).hexdigest(), 16)
+    ua = _PROBE_UAS[h % len(_PROBE_UAS)]
+    url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={target}"
+    headers = {
+        "user-agent": ua,
+        "x-ig-app-id": "936619743392459",
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+    }
+    return url, headers
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO
@@ -125,16 +146,49 @@ def check_cookie(filepath: str) -> str:
         if RESIDENTIAL_PROXY
         else None
     )
+    # First attempt with this hour's rotating probe.
+    url, headers = _build_probe()
     try:
         r = requests.get(
-            CHECK_URL,
-            headers={**CHECK_HEADERS, "cookie": cookie_str},
+            url,
+            headers={**headers, "cookie": cookie_str},
             proxies=proxies,
             timeout=10,
         )
-        return classify(r)
+        result = classify(r)
     except requests.RequestException as e:
         return f"error_{type(e).__name__}"
+
+    # Disambiguate: if we got 429-like rate_limited, our PROBE was throttled
+    # by IG's pattern detection — that doesn't tell us the cookie's state.
+    # Retry once with a different probe to check the cookie itself.
+    if result == "rate_limited":
+        import random as _r
+        import time as _t
+        _t.sleep(2 + _r.random() * 3)  # small jitter, ~2-5s
+        alt_url, alt_headers = _build_probe()
+        # Force a different probe than the first attempt.
+        if alt_url == url:
+            alt_url = alt_url.replace("?username=", "?username=") + "z"  # bogus query
+            alt_url = url.split("?")[0] + "?username=" + (
+                "natgeo" if "instagram" in url else "instagram"
+            )
+        try:
+            r2 = requests.get(
+                alt_url,
+                headers={**alt_headers, "cookie": cookie_str},
+                proxies=proxies,
+                timeout=10,
+            )
+            result2 = classify(r2)
+            # If the second probe succeeds, the cookie is fine — our first
+            # probe was just throttled. Trust the second result.
+            if result2 != "rate_limited":
+                return result2
+        except requests.RequestException:
+            pass
+
+    return result
 
 
 def telegram(message: str) -> None:

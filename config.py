@@ -20,6 +20,11 @@ GOOGLE_AI_MODEL_SENTIMENT = os.getenv("GOOGLE_AI_MODEL_SENTIMENT", "gemini-2.5-p
 # briefs). Default 400s; bump higher for very large clips.
 GEMINI_UPLOAD_TIMEOUT_SEC = int(os.getenv("GEMINI_UPLOAD_TIMEOUT_SEC", "400"))
 
+# Language for AI-generated hashtags appended to download messages. Defaults
+# to English (broader searchability, works across non-Persian channels).
+# Override with HASHTAG_LANGUAGE=fa to get Persian hashtags instead.
+HASHTAG_LANGUAGE = os.getenv("HASHTAG_LANGUAGE", "en")
+
 # Output language for YouTube summaries (ISO 639-1 code, e.g. "fa", "en", "de")
 RESPONSE_LANGUAGE = os.getenv("RESPONSE_LANGUAGE", "fa")
 

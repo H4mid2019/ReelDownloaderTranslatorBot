@@ -26,6 +26,7 @@ from config import (
     LOG_LEVEL,
     USE_LOCAL_AI,
     RESPONSE_LANGUAGE,
+    HASHTAG_LANGUAGE,
 )
 from config import ENABLE_AI_CACHE, CACHE_TTL_DAYS, CACHE_DB_PATH
 from config import ADMIN_CHAT_ID, INSTAGRAM_COOKIES_FROM_BROWSER, COBALT_LOCAL_URL
@@ -1350,7 +1351,7 @@ async def process_url(
                 # Follow-up: full caption (if truncated above) + hashtags.
                 from translator import generate_hashtags as _gen_tags
                 _basis = (result.caption or "").strip()
-                tags = _gen_tags(_basis, RESPONSE_LANGUAGE) if _basis else []
+                tags = _gen_tags(_basis, HASHTAG_LANGUAGE) if _basis else []
                 await _send_post_followup(
                     update,
                     full_caption=result.caption,
@@ -1541,7 +1542,7 @@ async def process_url(
             # than the caption alone.
             from translator import generate_hashtags as _gen_tags
             _basis = (transcript_result.get("text") or "").strip() or (result.caption or "").strip()
-            tags_v = _gen_tags(_basis, RESPONSE_LANGUAGE) if _basis else []
+            tags_v = _gen_tags(_basis, HASHTAG_LANGUAGE) if _basis else []
             footer_len = 80  # approximation of the per-platform video footer
             await _send_post_followup(
                 update,
