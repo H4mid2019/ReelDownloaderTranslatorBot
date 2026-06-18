@@ -139,7 +139,12 @@ Oracle server (130.61.180.78) ←─── WireGuard tunnel ───→ Home ro
 ### Cron jobs
 ```
 */5 * * * * /home/ubuntu/wg_monitor.sh
-0 * * * * cd <project> && .venv/bin/python cookie_health.py >> cookie_health.log 2>&1
+```
+(The hourly `cookie_health.py` cron was removed 2026-06-18 — see §9.)
+
+### Systemd timers
+```
+insta-cookie-refresh.timer   randomized 20-40h, runs refresh_cookies_run.sh
 ```
 
 ### Systemd unit
@@ -215,18 +220,37 @@ Maintenance:
 
 ## 9. Background monitors
 
-### Cookie health + auto-refresh (`cookie_health.py`)
-Hourly cron. For each cookie file, sends one HTTPS request via `wg_proxy` to
-`https://www.instagram.com/api/v1/users/web_profile_info/?username=instagram`.
-Classifies into states: `alive`, `expired`, `checkpoint`, `rate_limited`,
-`unknown_<code>`, `error_<exception>`. State persisted in
-`cookie_health_state.json`. **Telegram alert only on state CHANGE.**
+### Cookie health (`cookie_health.py`) — DISABLED as of 2026-06-18
+The hourly probe was removed from cron to **stop hammering Instagram**.
+Reason: even with the rotating probe targets I added, IG was still
+pattern-throttling the residential IP, and the script's `rate_limited`
+classification was masking the auto-refresh trigger anyway.
 
-**Auto-refresh:** when `cookies1.txt` is `expired`, it runs `refresh_cookies_run.sh`
-automatically (CloakBrowser login → fresh cookies). Guards: only on `expired`
-(never `rate_limited`/`checkpoint`), only `cookies1.txt` (the account we have
-creds for), 6h cooldown lock (`.last_auto_refresh`) to prevent re-login loops.
-Disable with `AUTO_REFRESH_COOKIES=false`.
+The script still exists and can be invoked manually
+(`.venv/bin/python cookie_health.py`) for ad-hoc checks. It will also
+auto-trigger a refresh if it ever sees `expired` (the gating logic remains).
+But it is no longer scheduled.
+
+### Cookie refresh — systemd timer (`insta-cookie-refresh.timer`)
+Replaces the old "auto-refresh on cookie_health expiry" mechanism. Runs the
+CloakBrowser login at a randomized cadence — **first run 20h after timer
+activation, every subsequent run 20-40h after the previous (fresh random
+pick each time, never the same gap twice in a row)**. Survives reboots
+(`Persistent=true`) and catches up after long downtimes.
+
+```
+/etc/systemd/system/insta-cookie-refresh.service  (oneshot, runs refresh_cookies_run.sh)
+/etc/systemd/system/insta-cookie-refresh.timer    (OnActiveSec=20h, OnUnitActiveSec=20h,
+                                                   RandomizedDelaySec=20h, Persistent=true)
+```
+
+Useful commands:
+```bash
+systemctl list-timers insta-cookie-refresh.timer    # when's the next run?
+sudo systemctl start insta-cookie-refresh.service   # run it now manually
+journalctl -u insta-cookie-refresh.service -n 50    # last run logs
+tail -f cookie_refresh.log                          # ongoing run output
+```
 
 ### Cookie refresh pipeline (`refresh_cookies.py` + `refresh_cookies_run.sh`)
 `refresh_cookies_run.sh` (host) runs `cloakhq/cloakbrowser` one-shot on `wg_net`
