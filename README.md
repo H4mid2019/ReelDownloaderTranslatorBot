@@ -51,11 +51,14 @@ Simply send or forward any supported link to the bot. It will automatically dete
   - Auto-detects video language.
   - **Translates all non-English videos to English** (Except Persian).
 - **Detailed Brief (`/db`) & Sentiment (`/dbs`):**
-  - Uploads the video directly to **Gemini** for native video understanding.
+  - For Instagram and X/Twitter: downloads the video and uploads it to **Gemini**. Long-video upload timeout is configurable via `GEMINI_UPLOAD_TIMEOUT_SEC` (default 400s).
+  - For **YouTube: no download needed** — Gemini ingests the URL natively via `types.FileData(file_uri=...)`. Much faster and avoids yt-dlp entirely.
   - **Hybrid language output:** the transcript stays **verbatim in the spoken language**, while the summary, key highlights, and takeaways are written in your configured `RESPONSE_LANGUAGE` (Persian by default). Set `RESPONSE_LANGUAGE=en` for English.
   - `/dbs` adds a **sentiment** section — observed facial cues, vocal tone, and text sentiment (also in `RESPONSE_LANGUAGE`). Uses a stronger model (`GOOGLE_AI_MODEL_SENTIMENT`, default `gemini-2.5-pro`).
   - Results are cached to avoid redundant API calls.
-  - Supported platforms: Instagram, X/Twitter, and **YouTube** videos.
+- **Post-download follow-up message:**
+  - When a caption is longer than Telegram's 1024-character media-caption limit, the bot sends a **separate text message** containing the **full caption + translation** (chunked for Telegram).
+  - **AI-generated hashtags** (4 by default) are appended for easy in-channel search/categorization. Hashtag language is configured via `HASHTAG_LANGUAGE` (default `en`; set `fa` for Persian).
 - **YouTube Summarizer:**
   - Paste any YouTube link and the bot fetches metadata and generates an AI summary via Gemini.
 - **Truth Social Monitor:**
@@ -164,22 +167,38 @@ The bot will:
 
 This command is restricted to `ADMIN_CHAT_ID`. Get your chat ID via `/chatid` in a private chat with the bot.
 
-### Expiry alerts & automated refresh
+### Automated refresh (optional)
 
-Set `ADMIN_CHAT_ID` in `.env` (falls back to `TRUTH_ALERT_CHAT_ID` if not set). An hourly cron (`cookie_health.py`) probes each cookie and sends a Telegram notification when a session's state changes (expired / checkpoint / rate-limited / recovered).
-
-**Automated refresh (optional):** if you provide login credentials, the health check can auto-renew the primary cookie when it expires — no manual export needed. It drives a stealth headless browser ([CloakBrowser](https://github.com/CloakHQ/CloakBrowser), via Docker) that logs in, handles TOTP 2FA, and writes a fresh cookie.
+If you provide login credentials, the bot can auto-renew the primary cookie on a **randomized 20–40 hour schedule** — no manual export needed. It drives a stealth headless browser ([CloakBrowser](https://github.com/CloakHQ/CloakBrowser), via Docker) that logs in, handles TOTP 2FA, and writes a fresh cookie that's swapped into place.
 
 ```env
 IG_USERNAME=your_account
 IG_PASSWORD=your_password
 IG_TOTP_SECRET=base32seed          # from the authenticator-app setup
-AUTO_REFRESH_COOKIES=true          # default; set false to disable
 ```
 
 The browser uses a **persistent profile** (`.cb_profile/`), so Instagram sees the same trusted "device" on every login — just like your everyday browser keeps you signed in.
 
+**Scheduling.** A systemd timer (`insta-cookie-refresh.timer`) fires the refresh at a random 20–40 hour interval — every fire picks a fresh random gap so two consecutive runs are never the same. To install:
+
+```bash
+sudo systemctl enable --now insta-cookie-refresh.timer
+systemctl list-timers insta-cookie-refresh.timer    # see next run
+sudo systemctl start insta-cookie-refresh.service   # trigger one manually
+journalctl -u insta-cookie-refresh.service -n 50    # last run logs
+```
+
 > The **first** automated login from a new machine triggers a one-time Instagram "Was this you?" checkpoint — approve it once in the Instagram app. After that the persistent profile keeps the device trusted, so subsequent logins won't re-prompt. Manual run: `./refresh_cookies_run.sh`. (Deleting `.cb_profile/` resets it to a new device.)
+
+### Health check (manual)
+
+The old hourly `cookie_health.py` cron was removed to avoid hammering Instagram. The script is still available for ad-hoc checks:
+
+```bash
+.venv/bin/python cookie_health.py
+```
+
+Set `ADMIN_CHAT_ID` in `.env` (falls back to `TRUTH_ALERT_CHAT_ID` if not set) to receive Telegram alerts when state changes.
 
 > **Note:** `INSTAGRAM_COOKIES_FROM_BROWSER` (auto-extract from Chrome/Firefox) is available but **only works on desktop machines with a GUI browser installed** — not on headless servers (Ubuntu ARM, Oracle Cloud, VPS, etc.).
 
