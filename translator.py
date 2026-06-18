@@ -341,3 +341,92 @@ def detect_and_translate(
     """
     translator = Translator()
     return translator.process_transcript(transcript, hint_language, use_local_ai)
+
+
+def generate_hashtags(
+    text: str,
+    target_language: str = "fa",
+    count: int = 4,
+) -> list[str]:
+    """Generate concise hashtags for a piece of text via Groq Llama.
+
+    Used to make Telegram messages searchable. Returns a list of hashtag
+    strings (each starts with '#'). Empty list on any failure — never raises.
+    """
+    import json as _json
+    import logging
+    import re
+
+    log = logging.getLogger(__name__)
+    text = (text or "").strip()
+    if not text or not GROQ_API_KEY:
+        return []
+
+    snippet = text[:2000]
+    lang_name = {
+        "fa": "Persian", "en": "English", "ar": "Arabic", "tr": "Turkish",
+        "de": "German", "fr": "French", "es": "Spanish",
+    }.get(target_language.lower(), target_language)
+
+    prompt = (
+        f"Generate exactly {count} concise, relevant hashtags in {lang_name} "
+        "for the following content. The hashtags will be used in a Telegram "
+        "channel to make content searchable.\n\n"
+        "Rules:\n"
+        f"- Each hashtag is one token written in {lang_name} script "
+        "(use underscores for multi-word concepts, no spaces).\n"
+        "- Start each with '#'.\n"
+        "- Focus on key topics, named entities, themes — NOT generic words.\n"
+        "- Return ONLY a JSON array of strings. No prose, no markdown.\n\n"
+        f"Content:\n{snippet}"
+    )
+
+    try:
+        client = groq.Groq(api_key=GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model=TRANSLATION_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=200,
+            response_format={"type": "json_object"},
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+    except Exception as exc:
+        log.warning("hashtag generation failed: %s", exc)
+        return []
+
+    # Accept either a bare array or an object with a tags-like key.
+    try:
+        data = _json.loads(raw)
+        if isinstance(data, dict):
+            for key in ("hashtags", "tags", "items", "result"):
+                if isinstance(data.get(key), list):
+                    data = data[key]
+                    break
+            else:
+                # Take the first list value if any.
+                list_vals = [v for v in data.values() if isinstance(v, list)]
+                data = list_vals[0] if list_vals else []
+        if not isinstance(data, list):
+            return []
+    except Exception:
+        # Last-ditch: extract anything that looks like a hashtag from raw text.
+        return list(dict.fromkeys(re.findall(r"#\S+", raw)))[:count]
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, str):
+            continue
+        tag = item.strip()
+        if not tag:
+            continue
+        if not tag.startswith("#"):
+            tag = "#" + tag.lstrip("#")
+        tag = tag.replace(" ", "_")
+        if tag not in seen:
+            seen.add(tag)
+            cleaned.append(tag)
+        if len(cleaned) >= count:
+            break
+    return cleaned

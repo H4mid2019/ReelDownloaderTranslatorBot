@@ -581,6 +581,42 @@ def cleanup_chunks(chunk_paths: list, original_path: str):
                 pass
 
 
+async def _send_post_followup(
+    update: Update,
+    *,
+    full_caption: Optional[str] = None,
+    full_translation: Optional[str] = None,
+    hashtags: Optional[list] = None,
+    was_truncated: bool = False,
+) -> None:
+    """Send a follow-up text message after media with the full caption/translation
+    (when the on-media caption had to be truncated to fit Telegram's 1024-char
+    limit) and AI-generated hashtags for searchability. No-op when there's
+    nothing useful to send."""
+    if not update.message:
+        return
+    parts: list[str] = []
+    if was_truncated:
+        if full_caption and full_caption.strip():
+            parts.append(f"📝 **Full caption**\n{full_caption.strip()}")
+        if full_translation and full_translation.strip():
+            parts.append(f"🌐 **Full translation**\n{full_translation.strip()}")
+    if hashtags:
+        parts.append(" ".join(hashtags))
+    if not parts:
+        return
+    text = "\n\n".join(parts)
+    # Telegram message limit is 4096; chunk a bit under that to leave headroom.
+    for start in range(0, len(text), 4000):
+        try:
+            await update.message.reply_text(
+                text[start:start + 4000], disable_web_page_preview=True
+            )
+        except Exception as exc:  # never break the main flow over a follow-up
+            logger.warning("post follow-up send failed: %s", exc)
+            return
+
+
 async def send_video_or_chunks(
     update: Update,
     video_path: str,
@@ -1310,6 +1346,21 @@ async def process_url(
                         await status_msg.edit_text("✅ Gallery sent successfully!")
                     except Exception as e:
                         logger.warning(f"Failed to edit success message: {e}")
+
+                # Follow-up: full caption (if truncated above) + hashtags.
+                from translator import generate_hashtags as _gen_tags
+                _basis = (result.caption or "").strip()
+                tags = _gen_tags(_basis, RESPONSE_LANGUAGE) if _basis else []
+                await _send_post_followup(
+                    update,
+                    full_caption=result.caption,
+                    full_translation=translated_caption,
+                    hashtags=tags,
+                    was_truncated=(
+                        len(result.caption or "") + len(translated_caption or "")
+                        > (1024 - len(footer) - 30)
+                    ),
+                )
             except Exception as e:
                 logger.error(f"Failed to send media group: {e}", exc_info=True)
                 if status_msg:
@@ -1484,6 +1535,24 @@ async def process_url(
                     await status_msg.edit_text("✅ Video sent successfully!")
                 except Exception:
                     pass  # Message was deleted or invalid
+
+            # Follow-up: full caption (if truncated) + AI hashtags. Prefer the
+            # transcript as the basis for tags when available — richer signal
+            # than the caption alone.
+            from translator import generate_hashtags as _gen_tags
+            _basis = (transcript_result.get("text") or "").strip() or (result.caption or "").strip()
+            tags_v = _gen_tags(_basis, RESPONSE_LANGUAGE) if _basis else []
+            footer_len = 80  # approximation of the per-platform video footer
+            await _send_post_followup(
+                update,
+                full_caption=result.caption,
+                full_translation=translated_caption,
+                hashtags=tags_v,
+                was_truncated=(
+                    len(result.caption or "") + len(translated_caption or "")
+                    > (1024 - footer_len - 30)
+                ),
+            )
 
             # ── STEP 3: Handle Persian — no transcription/translation needed ───
             if is_skipped:
