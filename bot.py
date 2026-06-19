@@ -162,12 +162,23 @@ _COOKIE_CHECK_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
 
 async def instagram_cookie_health_loop(application: Application) -> None:
     """
-    Background task: checks Instagram cookie validity every 6 hours.
-    Sends a Telegram alert to ADMIN_CHAT_ID when cookies have expired so
-    the operator can refresh them before users hit failures.
-    Skipped entirely when INSTAGRAM_COOKIES_FROM_BROWSER is set (browser
-    manages freshness automatically).
+    Background task: probes Instagram cookie validity every 6 hours and
+    Telegrams ADMIN_CHAT_ID when the session is dead.
+
+    Disabled by default — the CloakBrowser auto-refresh systemd timer
+    (insta-cookie-refresh.timer) already keeps cookies fresh on a randomized
+    20-40h cadence, and an additional 4x/day probe just adds IG traffic with
+    no real upside. Re-enable by setting INSTAGRAM_COOKIE_HEALTH_LOOP=true
+    in .env.
     """
+    if os.getenv("INSTAGRAM_COOKIE_HEALTH_LOOP", "false").lower() not in ("1", "true", "yes"):
+        logger.info(
+            "Instagram cookie health loop disabled "
+            "(set INSTAGRAM_COOKIE_HEALTH_LOOP=true to re-enable). "
+            "Cookies are refreshed by the insta-cookie-refresh systemd timer."
+        )
+        return
+
     if INSTAGRAM_COOKIES_FROM_BROWSER:
         logger.info(
             "Instagram cookie health check disabled — "
@@ -1349,9 +1360,13 @@ async def process_url(
                         logger.warning(f"Failed to edit success message: {e}")
 
                 # Follow-up: full caption (if truncated above) + hashtags.
-                from translator import generate_hashtags as _gen_tags
+                from translator import (
+                    generate_hashtags as _gen_tags,
+                    detect_hashtag_language as _pick_lang,
+                )
                 _basis = (result.caption or "").strip()
-                tags = _gen_tags(_basis, HASHTAG_LANGUAGE) if _basis else []
+                _lang = _pick_lang(_basis, fallback=HASHTAG_LANGUAGE)
+                tags = _gen_tags(_basis, _lang) if _basis else []
                 await _send_post_followup(
                     update,
                     full_caption=result.caption,
@@ -1540,9 +1555,13 @@ async def process_url(
             # Follow-up: full caption (if truncated) + AI hashtags. Prefer the
             # transcript as the basis for tags when available — richer signal
             # than the caption alone.
-            from translator import generate_hashtags as _gen_tags
+            from translator import (
+                generate_hashtags as _gen_tags,
+                detect_hashtag_language as _pick_lang,
+            )
             _basis = (transcript_result.get("text") or "").strip() or (result.caption or "").strip()
-            tags_v = _gen_tags(_basis, HASHTAG_LANGUAGE) if _basis else []
+            _lang = _pick_lang(_basis, fallback=HASHTAG_LANGUAGE)
+            tags_v = _gen_tags(_basis, _lang) if _basis else []
             footer_len = 80  # approximation of the per-platform video footer
             await _send_post_followup(
                 update,

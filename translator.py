@@ -343,6 +343,22 @@ def detect_and_translate(
     return translator.process_transcript(transcript, hint_language, use_local_ai)
 
 
+def detect_hashtag_language(text: str, fallback: str = "en") -> str:
+    """Pick the hashtag language for a piece of text.
+
+    Persian/Farsi captions get Persian hashtags (Arabic-script counts too —
+    same RTL audience). Everything else gets the configured ``fallback``
+    (HASHTAG_LANGUAGE, default 'en').
+    """
+    if not text or len(text) < 20:
+        return fallback
+    persian_range = sum(1 for c in text if "؀" <= c <= "ۿ")
+    letters = sum(1 for c in text if c.isalpha())
+    if letters and persian_range / letters > 0.5:
+        return "fa"
+    return fallback
+
+
 def generate_hashtags(
     text: str,
     target_language: str = "fa",
