@@ -279,9 +279,11 @@ Started by `bot.py` `post_init`. Polls RSS, dedupes via `last_truth_id.txt`,
 classifies relevance to Iran via Groq, translates to Persian, posts to
 `TRUTH_ALERT_CHAT_ID` supergroup.
 
-### Instagram cookie health (in-process, separate from above)
-Bot also has `instagram_cookie_health_loop` (in `bot.py`) that pings Cobalt
-every few hours. Different from the standalone `cookie_health.py` script.
+### In-process cookie loop (`bot.py:instagram_cookie_health_loop`) — DISABLED
+Used to probe IG every 6h and Telegram-alert "session expired" with stale
+instaloader-based recovery guidance. Disabled 2026-06-19 (`INSTAGRAM_COOKIE_HEALTH_LOOP=false`
+by default; the systemd refresh timer makes it redundant). Set
+`INSTAGRAM_COOKIE_HEALTH_LOOP=true` in `.env` to re-enable.
 
 ---
 
